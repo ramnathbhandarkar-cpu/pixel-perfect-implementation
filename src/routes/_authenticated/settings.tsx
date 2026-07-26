@@ -57,23 +57,12 @@ function SettingsScreen() {
     setMsg(null);
     setErr(null);
     try {
-      const { data: u } = await supabase.auth.getUser();
-      if (!u.user) throw new Error("Not signed in");
       const now = new Date().toISOString();
       const rows = [
+        { key: "provider", value: { name: provider } },
         {
-          user_id: u.user.id,
-          key: "provider",
-          value: { name: provider },
-        },
-        {
-          user_id: u.user.id,
           key: "kite_credentials",
-          value: {
-            api_key: apiKey,
-            access_token: accessToken,
-            updated_at: now,
-          },
+          value: { api_key: apiKey, access_token: accessToken, updated_at: now },
         },
       ];
       const { error } = await supabase
