@@ -3,6 +3,13 @@ import { useEffect, useState } from "react";
 import { PageHeader, PageBody, DisclaimerFooter } from "@/components/app-shell";
 import { supabase } from "@/integrations/supabase/client";
 import { callSwing } from "@/lib/swing-api";
+import {
+  disablePush,
+  enablePush,
+  pushStatus,
+  sendTestPush,
+  type PushState,
+} from "@/lib/push";
 
 export const Route = createFileRoute("/_authenticated/settings")({
   head: () => ({
@@ -30,6 +37,9 @@ function SettingsScreen() {
   const [running, setRunning] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [push, setPush] = useState<PushState | null>(null);
+  const [pushBusy, setPushBusy] = useState(false);
+  const [pushMsg, setPushMsg] = useState<string | null>(null);
 
   useEffect(() => {
     let mounted = true;
@@ -48,10 +58,43 @@ function SettingsScreen() {
         }
       }
     })();
+    void pushStatus().then(setPush);
     return () => {
       mounted = false;
     };
   }, []);
+
+  async function togglePush() {
+    setPushBusy(true);
+    setPushMsg(null);
+    try {
+      if (push === "subscribed") {
+        await disablePush();
+        setPushMsg("Push disabled on this device.");
+      } else {
+        await enablePush();
+        setPushMsg("Push enabled — alerts will arrive even with the app closed.");
+      }
+      setPush(await pushStatus());
+    } catch (e) {
+      setPushMsg(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPushBusy(false);
+    }
+  }
+
+  async function testPush() {
+    setPushBusy(true);
+    setPushMsg(null);
+    try {
+      const sent = await sendTestPush();
+      setPushMsg(sent > 0 ? `Test sent to ${sent} device${sent === 1 ? "" : "s"}.` : "No subscribed devices.");
+    } catch (e) {
+      setPushMsg(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPushBusy(false);
+    }
+  }
 
   async function saveProvider(p: Provider) {
     setProvider(p);
@@ -224,6 +267,41 @@ function SettingsScreen() {
               >
                 {running === "nightly" ? "Running…" : "Run nightly job now"}
               </button>
+            </div>
+          </section>
+
+          <section className="surface p-5">
+            <h2 className="text-sm font-semibold text-foreground">Notifications</h2>
+            <p className="text-xs text-muted-fg mt-1">
+              Web Push delivers alerts to this device even when the app is closed —
+              including critical invalidation-line breaches.
+            </p>
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <button
+                onClick={togglePush}
+                disabled={pushBusy || push === "unsupported" || push === "denied"}
+                className="btn-primary hover:btn-primary-hover text-xs disabled:opacity-60"
+              >
+                {push === "subscribed" ? "Disable push on this device" : "Enable push on this device"}
+              </button>
+              {push === "subscribed" && (
+                <button
+                  onClick={testPush}
+                  disabled={pushBusy}
+                  className="text-xs px-3 py-1.5 rounded border border-border text-muted-fg hover:text-foreground disabled:opacity-60"
+                >
+                  Send test notification
+                </button>
+              )}
+              {push === "unsupported" && (
+                <span className="text-xs text-faint">This browser does not support Web Push.</span>
+              )}
+              {push === "denied" && (
+                <span className="text-xs text-warning">
+                  Notifications are blocked for this site — allow them in the browser settings.
+                </span>
+              )}
+              {pushMsg && <span className="text-xs text-muted-fg">{pushMsg}</span>}
             </div>
           </section>
         </div>

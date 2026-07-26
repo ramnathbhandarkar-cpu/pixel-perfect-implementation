@@ -13,6 +13,7 @@
 // Deployed with verify_jwt disabled; this function does its own auth.
 
 import { createClient, type SupabaseClient } from "npm:@supabase/supabase-js@2";
+import webpush from "npm:web-push@3.6.7";
 import { computeLevels, type DailyCandle } from "./levels-engine.ts";
 import { runScreener, type ScreenerInput } from "./screener-engine.ts";
 
@@ -290,6 +291,191 @@ async function insertAlert(
     payload: alert.payload ?? null,
   });
   if (error) console.error(`Alert insert failed: ${error.message}`);
+  // Web Push so alerts arrive with the app closed. Best-effort; the inbox
+  // row above is the source of truth.
+  try {
+    await sendPushToAll({
+      title: alert.symbol ? `${alert.symbol} — ${alert.title}` : alert.title,
+      body: alert.body,
+      severity: alert.severity,
+    });
+  } catch (e) {
+    console.error(`Push send failed: ${e instanceof Error ? e.message : e}`);
+  }
+}
+
+// ── Web Push (VAPID keys live in server_secrets.vapid) ───────
+
+async function vapidConfig(): Promise<{ publicKey: string; privateKey: string; subject: string } | null> {
+  const v = await getSecret("vapid");
+  if (!v?.public_key || !v?.private_key) return null;
+  return {
+    publicKey: v.public_key,
+    privateKey: v.private_key,
+    subject: v.subject ?? "mailto:owner@example.com",
+  };
+}
+
+async function sendPushToAll(payload: { title: string; body: string; severity: string }): Promise<number> {
+  const cfg = await vapidConfig();
+  if (!cfg) return 0; // push not configured — silently skip
+  const { data: subs, error } = await db
+    .from("push_subscriptions")
+    .select("id, endpoint, p256dh, auth");
+  if (error || !subs?.length) return 0;
+  webpush.setVapidDetails(cfg.subject, cfg.publicKey, cfg.privateKey);
+  let sent = 0;
+  for (const s of subs) {
+    try {
+      await webpush.sendNotification(
+        {
+          endpoint: s.endpoint as string,
+          keys: { p256dh: s.p256dh as string, auth: s.auth as string },
+        },
+        JSON.stringify(payload),
+        { TTL: 3600 },
+      );
+      sent += 1;
+    } catch (e) {
+      const status = (e as { statusCode?: number }).statusCode;
+      if (status === 404 || status === 410) {
+        await db.from("push_subscriptions").delete().eq("id", s.id);
+      } else {
+        console.error(`Push to ${String(s.endpoint).slice(0, 40)}… failed: ${status ?? e}`);
+      }
+    }
+  }
+  return sent;
+}
+
+// ── Phase 5: alert-rule evaluation (fires once per candle) ───
+
+function istHourBucket(tsIso: string): number {
+  const t = new Date(tsIso).getTime() + 5.5 * 3600 * 1000;
+  return t - (t % 3_600_000) - 5.5 * 3600 * 1000;
+}
+
+async function evaluateAlertRules(uid: string | null): Promise<{ fired: number }> {
+  const { data: rules, error } = await db.from("alert_rules").select("*").eq("is_active", true);
+  if (error) throw new Error(`Load alert rules failed: ${error.message}`);
+  if (!rules?.length) return { fired: 0 };
+
+  const symbols = [...new Set(rules.map((r) => r.symbol as string))];
+  const [candlesRes, levelsRes] = await Promise.all([
+    db
+      .from("candles")
+      .select("symbol, ts, close, volume")
+      .eq("timeframe", "15m")
+      .in("symbol", symbols)
+      .gte("ts", new Date(Date.now() - 3 * 86400 * 1000).toISOString())
+      .order("ts", { ascending: true })
+      .limit(3000),
+    db
+      .from("levels")
+      .select("symbol, as_of, support, resistance, support_tests, resistance_tests")
+      .in("symbol", symbols)
+      .order("as_of", { ascending: false })
+      .limit(500),
+  ]);
+  const bySymbol = new Map<string, { ts: string; close: number; volume: number | null }[]>();
+  for (const row of candlesRes.data ?? []) {
+    const list = bySymbol.get(row.symbol as string) ?? [];
+    list.push({
+      ts: row.ts as string,
+      close: Number(row.close),
+      volume: row.volume == null ? null : Number(row.volume),
+    });
+    bySymbol.set(row.symbol as string, list);
+  }
+  const latestLevel = new Map<string, Record<string, unknown>>();
+  for (const row of levelsRes.data ?? []) {
+    if (!latestLevel.has(row.symbol as string)) latestLevel.set(row.symbol as string, row);
+  }
+
+  let fired = 0;
+  for (const rule of rules) {
+    const candles = bySymbol.get(rule.symbol as string) ?? [];
+    if (candles.length === 0) continue;
+    const last = candles[candles.length - 1];
+    const prev = candles.length > 1 ? candles[candles.length - 2] : null;
+    const lastFired = rule.last_fired_candle ? new Date(rule.last_fired_candle as string).getTime() : null;
+
+    if (rule.rule_type === "volume_hourly" && rule.threshold != null) {
+      const bucket = istHourBucket(last.ts);
+      if (lastFired === bucket) continue; // once per (hourly) candle
+      const vol = candles
+        .filter((c) => istHourBucket(c.ts) === bucket)
+        .reduce((s, c) => s + (c.volume ?? 0), 0);
+      if (vol >= Number(rule.threshold)) {
+        await insertAlertNoPushLoop(uid, {
+          symbol: rule.symbol as string,
+          alert_type: "volume_hourly",
+          severity: "info",
+          title: `Hourly volume ${vol.toLocaleString("en-IN")} crossed ${Number(rule.threshold).toLocaleString("en-IN")}`,
+          body: "Volume spike ≠ direction. Wait for the close.",
+          payload: { rule_id: rule.id, candle: new Date(bucket).toISOString() },
+        });
+        await db
+          .from("alert_rules")
+          .update({ last_fired_candle: new Date(bucket).toISOString() })
+          .eq("id", rule.id);
+        fired += 1;
+      }
+    } else if (rule.rule_type === "price_target" && rule.threshold != null && prev) {
+      const candleTs = new Date(last.ts).getTime();
+      if (lastFired === candleTs) continue;
+      const thr = Number(rule.threshold);
+      const crossedUp = prev.close < thr && last.close >= thr;
+      const crossedDown = prev.close > thr && last.close <= thr;
+      if (crossedUp || crossedDown) {
+        await insertAlertNoPushLoop(uid, {
+          symbol: rule.symbol as string,
+          alert_type: "price_target",
+          severity: "info",
+          title: `Price crossed ₹${thr} (now ₹${last.close})`,
+          body: `Close moved ${crossedUp ? "above" : "below"} your marker of ₹${thr}.`,
+          payload: { rule_id: rule.id, candle: last.ts },
+        });
+        await db.from("alert_rules").update({ last_fired_candle: last.ts }).eq("id", rule.id);
+        fired += 1;
+      }
+    } else if (rule.rule_type === "level_cross" && prev) {
+      const candleTs = new Date(last.ts).getTime();
+      if (lastFired === candleTs) continue;
+      const level = latestLevel.get(rule.symbol as string);
+      if (!level) continue;
+      const support = level.support == null ? null : Number(level.support);
+      const resistance = level.resistance == null ? null : Number(level.resistance);
+      let text: string | null = null;
+      if (support != null && prev.close >= support && last.close < support) {
+        text = `Close ₹${last.close} moved below support ₹${support} (tested ${level.support_tests}×).`;
+      } else if (resistance != null && prev.close <= resistance && last.close > resistance) {
+        text = `Close ₹${last.close} moved above resistance ₹${resistance} (tested ${level.resistance_tests}×).`;
+      }
+      if (text) {
+        await insertAlertNoPushLoop(uid, {
+          symbol: rule.symbol as string,
+          alert_type: "level_cross",
+          severity: "warning",
+          title: "Level crossed",
+          body: `${text} A cross describes where price is, not where it goes next.`,
+          payload: { rule_id: rule.id, candle: last.ts },
+        });
+        await db.from("alert_rules").update({ last_fired_candle: last.ts }).eq("id", rule.id);
+        fired += 1;
+      }
+    }
+  }
+  return { fired };
+}
+
+// insertAlert wrapper used by the rule loop (kept separate so a future
+// batching change cannot accidentally re-alert inside one candle).
+async function insertAlertNoPushLoop(
+  uid: string | null,
+  alert: Parameters<typeof insertAlert>[1],
+): Promise<void> {
+  await insertAlert(uid, alert);
 }
 
 const round2 = (v: number | null) => (v == null ? null : Math.round(v * 100) / 100);
@@ -731,7 +917,13 @@ async function actionRefreshCandles(uid: string | null, body: Record<string, unk
     return { ok: false, error: "provider returned zero rows", refresh };
   }
   const lines = await checkLineCrossed(uid);
-  return { ok: true, refresh: { totalRows: refresh.totalRows, errors: refresh.errors }, lines };
+  const ruleAlerts = await evaluateAlertRules(uid);
+  return {
+    ok: true,
+    refresh: { totalRows: refresh.totalRows, errors: refresh.errors },
+    lines,
+    ruleAlerts,
+  };
 }
 
 async function actionNightly(uid: string | null) {
@@ -751,6 +943,7 @@ async function actionNightly(uid: string | null) {
   const levels = await computeAndStoreLevels(uid, stocks);
   const screener = await runAndStoreScreener(uid, stocks);
   const lines = await checkLineCrossed(uid);
+  const ruleAlerts = await evaluateAlertRules(uid);
   const q = screener.result.qualifying.length;
   const rej =
     screener.result.rejectedThinSupport +
@@ -775,7 +968,48 @@ async function actionNightly(uid: string | null) {
     levels,
     screener: { runDate: screener.runDate, qualifying: q, scanned: screener.result.scanned },
     lines,
+    ruleAlerts,
   };
+}
+
+// ── push subscription actions ────────────────────────────────
+
+async function actionGetVapidPublic() {
+  const cfg = await vapidConfig();
+  if (!cfg) throw new Error("Web Push is not configured on the server yet.");
+  return { publicKey: cfg.publicKey };
+}
+
+async function actionPushSubscribe(uid: string | null, body: Record<string, unknown>) {
+  const endpoint = String(body.endpoint ?? "");
+  const keys = body.keys as { p256dh?: string; auth?: string } | undefined;
+  if (!endpoint || !keys?.p256dh || !keys?.auth) {
+    throw new Error("endpoint and keys {p256dh, auth} are required");
+  }
+  const { error } = await db
+    .from("push_subscriptions")
+    .upsert(
+      { user_id: uid, endpoint, p256dh: keys.p256dh, auth: keys.auth },
+      { onConflict: "endpoint" },
+    );
+  if (error) throw new Error(`Subscription save failed: ${error.message}`);
+  return { ok: true };
+}
+
+async function actionPushUnsubscribe(body: Record<string, unknown>) {
+  const endpoint = String(body.endpoint ?? "");
+  if (!endpoint) throw new Error("endpoint required");
+  await db.from("push_subscriptions").delete().eq("endpoint", endpoint);
+  return { ok: true };
+}
+
+async function actionPushTest() {
+  const sent = await sendPushToAll({
+    title: "Swing Trade — test notification",
+    body: "Push is working. Alerts will arrive even with the app closed.",
+    severity: "info",
+  });
+  return { ok: true, sent };
 }
 
 // ── handler ──────────────────────────────────────────────────
@@ -824,6 +1058,14 @@ Deno.serve(async (req) => {
         return json(await actionRefreshCandles(uid, body));
       case "nightly":
         return json(await actionNightly(uid));
+      case "get_vapid_public":
+        return json(await actionGetVapidPublic());
+      case "push_subscribe":
+        return json(await actionPushSubscribe(uid, body));
+      case "push_unsubscribe":
+        return json(await actionPushUnsubscribe(body));
+      case "push_test":
+        return json(await actionPushTest());
       default:
         return json({ error: `unknown action "${action}"` }, 400);
     }
