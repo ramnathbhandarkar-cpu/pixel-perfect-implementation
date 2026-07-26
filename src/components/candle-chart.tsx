@@ -7,7 +7,6 @@ import {
   CrosshairMode,
   type IChartApi,
   type ISeriesApi,
-  type Time,
   type UTCTimestamp,
 } from "lightweight-charts";
 import {
@@ -16,8 +15,8 @@ import {
   rsi as rsiFn,
   bollinger,
   vwap as vwapFn,
-  type Candle,
-} from "@/lib/indicators";
+export type { Candle } from "@/lib/indicators";
+import type { Candle } from "@/lib/indicators";
 
 export interface Overlay {
   price: number;
