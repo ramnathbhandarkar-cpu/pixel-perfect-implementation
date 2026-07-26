@@ -2,7 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { PageHeader, PageBody, DisclaimerFooter } from "@/components/app-shell";
 import { supabase } from "@/integrations/supabase/client";
-import { callSwing } from "@/lib/swing-api";
+import { callSwing, marketDataHint } from "@/lib/swing-api";
 import { disablePush, enablePush, pushStatus, sendTestPush, type PushState } from "@/lib/push";
 import { EXPORT_TABLES, exportAllJson, exportTableCsv, type ExportTable } from "@/lib/export";
 
@@ -141,7 +141,7 @@ function SettingsScreen() {
           : `${action === "refresh_candles" ? "Refresh" : "Nightly job"} done.`,
       );
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
+      setErr(marketDataHint(e));
     } finally {
       setRunning(null);
     }

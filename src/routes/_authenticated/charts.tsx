@@ -2,7 +2,7 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { PageHeader, PageBody, DisclaimerFooter } from "@/components/app-shell";
 import { supabase } from "@/integrations/supabase/client";
-import { callSwing } from "@/lib/swing-api";
+import { callSwing, marketDataHint } from "@/lib/swing-api";
 import { importCandleCsv } from "@/lib/pipeline";
 import { distanceToLinePct } from "@/lib/discipline";
 import type { Candle, Overlay } from "@/components/candle-chart";
@@ -202,7 +202,7 @@ function ChartsScreen() {
       setMsg(`Fetched ${r.inserted} candles from Kite.`);
       await loadCandles();
     } catch (e) {
-      setErr(kiteHint(e));
+      setErr(marketDataHint(e));
     } finally {
       setBusy(null);
     }
@@ -216,7 +216,7 @@ function ChartsScreen() {
       const r = await callSwing<{ count: number }>("sync_instruments");
       setMsg(`Synced ${r.count} NSE instruments.`);
     } catch (e) {
-      setErr(kiteHint(e));
+      setErr(marketDataHint(e));
     } finally {
       setBusy(null);
     }
@@ -531,22 +531,4 @@ function ChartsScreen() {
       <DisclaimerFooter />
     </>
   );
-}
-
-// Kite failures are almost always one of three fixable things — say which.
-function kiteHint(e: unknown): string {
-  const m = e instanceof Error ? e.message : String(e);
-  if (/not set|credentials/i.test(m)) {
-    return `${m}\nSave today's Kite API key + access token in Settings.`;
-  }
-  if (/403|token|api_key|Invalid/i.test(m)) {
-    return `${m}\nKite tokens expire daily — paste a fresh access token in Settings.`;
-  }
-  if (/Instrument not found/i.test(m)) {
-    return `${m}\nPress “Sync instruments” once, then retry.`;
-  }
-  if (/Failed to send|fetch|NetworkError|non-2xx/i.test(m)) {
-    return `${m}\nThe market-data function is unreachable. CSV upload still works offline of Kite.`;
-  }
-  return m;
 }

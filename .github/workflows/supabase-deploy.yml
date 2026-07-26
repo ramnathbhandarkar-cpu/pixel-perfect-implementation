@@ -1,26 +1,30 @@
 name: Deploy Supabase backend
 
-# Manual, one-shot deploy of the `swing` edge function and the pg_cron
-# schedules. Run from the Actions tab (or via the API) and paste the two
-# values in — nothing secret is stored in the repository.
+# Deploys the `swing` edge function and keeps the pg_cron schedules in sync.
 #
-# Rotate both credentials afterwards: workflow inputs are recorded in the
-# run's event payload and visible to anyone who can read this repo.
+# One-time setup — add two repository secrets
+# (Settings → Secrets and variables → Actions → New repository secret):
+#
+#   SUPABASE_ACCESS_TOKEN   from supabase.com/dashboard/account/tokens
+#   SUPABASE_DB_URL         Settings → Database → Connection string → URI
+#                           (optional; only needed to schedule pg_cron)
+#
+# After that this runs automatically whenever the function or the cron SQL
+# changes, and can be run by hand from the Actions tab. Secrets are masked
+# in the logs by GitHub and nothing secret is committed.
 
 on:
   workflow_dispatch:
-    inputs:
-      supabase_access_token:
-        description: "Supabase access token (sbp_...) — from /account/tokens"
-        required: true
-      db_url:
-        description: "Postgres connection string (optional; schedules pg_cron when set)"
-        required: false
-        default: ""
-      run_smoke_test:
-        description: "After deploying, call the function and print the result"
-        required: false
-        default: "true"
+  push:
+    branches: [main]
+    paths:
+      - "supabase/functions/**"
+      - "supabase/cron.sql"
+      - ".github/workflows/supabase-deploy.yml"
+
+concurrency:
+  group: supabase-deploy
+  cancel-in-progress: false
 
 jobs:
   deploy:
@@ -30,12 +34,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Mask the inputs in the log
+      - name: Check the access token is configured
         run: |
-          echo "::add-mask::${{ inputs.supabase_access_token }}"
-          if [ -n "${{ inputs.db_url }}" ]; then
-            echo "::add-mask::${{ inputs.db_url }}"
+          if [ -z "${{ secrets.SUPABASE_ACCESS_TOKEN }}" ]; then
+            echo "::error::SUPABASE_ACCESS_TOKEN secret is not set. Add it under"
+            echo "::error::Settings → Secrets and variables → Actions, then re-run."
+            exit 1
           fi
+          echo "token present"
 
       - uses: supabase/setup-cli@v1
         with:
@@ -43,7 +49,7 @@ jobs:
 
       - name: Deploy the swing edge function
         env:
-          SUPABASE_ACCESS_TOKEN: ${{ inputs.supabase_access_token }}
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
         run: |
           # --no-verify-jwt: the function authenticates callers itself
           # (owner JWT for app actions, x-ingest-secret for cron).
@@ -51,7 +57,7 @@ jobs:
             --project-ref "$PROJECT_REF" \
             --no-verify-jwt
 
-      - name: Confirm the function is live and rejects anonymous calls
+      - name: Confirm it is live and refuses anonymous calls
         run: |
           code="$(curl -s -o /tmp/body.txt -w '%{http_code}' -X POST \
             "https://${PROJECT_REF}.supabase.co/functions/v1/swing" \
@@ -64,30 +70,36 @@ jobs:
             echo "::warning::expected 401 from an unauthenticated call, got $code"
           fi
 
+      - name: Install psql
+        if: ${{ secrets.SUPABASE_DB_URL != '' }}
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client
+
       - name: Schedule the pg_cron jobs
-        if: ${{ inputs.db_url != '' }}
+        if: ${{ secrets.SUPABASE_DB_URL != '' }}
         env:
-          PGURL: ${{ inputs.db_url }}
+          PGURL: ${{ secrets.SUPABASE_DB_URL }}
         run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client
           psql "$PGURL" -v ON_ERROR_STOP=1 -f supabase/cron.sql
           echo "--- scheduled jobs ---"
           psql "$PGURL" -qtAX -c \
-            "select jobname || '  |  ' || schedule || '  |  active=' || active from cron.job order by jobname;"
+            "select jobname || '  |  ' || schedule || '  |  active=' || active
+             from cron.job order by jobname;"
 
       - name: Report database state
-        if: ${{ inputs.db_url != '' }}
+        if: ${{ secrets.SUPABASE_DB_URL != '' }}
         env:
-          PGURL: ${{ inputs.db_url }}
+          PGURL: ${{ secrets.SUPABASE_DB_URL }}
         run: |
-          echo "--- RLS per table (all must be true) ---"
+          echo "--- RLS per table (every one must be true) ---"
           psql "$PGURL" -qtAX -c \
-            "select tablename || '=' || rowsecurity from pg_tables where schemaname='public' order by tablename;"
+            "select tablename || '=' || rowsecurity from pg_tables
+             where schemaname='public' order by tablename;"
           echo "--- anon grants on public tables (must be empty) ---"
           psql "$PGURL" -qtAX -c \
-            "select table_name || ':' || privilege_type from information_schema.role_table_grants
+            "select table_name || ':' || privilege_type
+             from information_schema.role_table_grants
              where grantee='anon' and table_schema='public';"
-          echo "--- server_secrets keys (names only) ---"
+          echo "--- server_secrets keys (names only, never values) ---"
           psql "$PGURL" -qtAX -c "select key from public.server_secrets order by key;"
           echo "--- row counts ---"
           psql "$PGURL" -qtAX -c \
@@ -96,23 +108,19 @@ jobs:
                  ||' levels='||(select count(*) from public.levels)
                  ||' screener_runs='||(select count(*) from public.screener_runs);"
 
-      - name: Kite smoke test through the function
-        if: ${{ inputs.run_smoke_test == 'true' }}
+      - name: Kite smoke test through the deployed function
+        if: ${{ secrets.SUPABASE_DB_URL != '' }}
         env:
-          SUPABASE_ACCESS_TOKEN: ${{ inputs.supabase_access_token }}
-          PGURL: ${{ inputs.db_url }}
+          PGURL: ${{ secrets.SUPABASE_DB_URL }}
         run: |
-          if [ -z "$PGURL" ]; then
-            echo "no db_url given — skipping (the ingest secret lives in the database)"
-            exit 0
-          fi
-          sudo apt-get install -y -qq postgresql-client || true
           SECRET="$(psql "$PGURL" -qtAX -c \
             "select value->>'value' from public.server_secrets where key='ingest_secret';")"
           echo "::add-mask::$SECRET"
-          echo "Calling sync_instruments (proves the stored Kite token works)…"
+          echo "sync_instruments — proves the stored Kite credentials work:"
           curl -s -X POST "https://${PROJECT_REF}.supabase.co/functions/v1/swing" \
             -H 'Content-Type: application/json' \
             -H "x-ingest-secret: $SECRET" \
             -d '{"action":"sync_instruments"}' | head -c 600
           echo
+          echo "(a Kite token error here means the daily token needs refreshing in Settings —"
+          echo " the function itself is deployed and reachable)"
