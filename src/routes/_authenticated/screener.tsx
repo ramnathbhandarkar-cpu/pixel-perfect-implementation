@@ -1,10 +1,9 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useServerFn } from "@tanstack/react-start";
 import { AlertTriangle } from "lucide-react";
 import { PageHeader, PageBody, DisclaimerFooter } from "@/components/app-shell";
 import { supabase } from "@/integrations/supabase/client";
-import { computeLevelsAndScreen } from "@/lib/phase3.functions";
+import { callSwing } from "@/lib/swing-api";
 import {
   runScreener,
   sectorClusters,
@@ -62,8 +61,6 @@ function ScreenerScreen() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
-
-  const runNow = useServerFn(computeLevelsAndScreen);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -173,7 +170,11 @@ function ScreenerScreen() {
     setErr(null);
     setMsg(null);
     try {
-      const r = await runNow({ data: { recomputeLevels: true } });
+      const r = await callSwing<{
+        levels: { computed: string[] } | null;
+        runDate: string;
+        qualifying: number;
+      }>("run_screener", { recomputeLevels: true });
       setMsg(
         `Levels recomputed for ${r.levels?.computed.length ?? 0} symbols · run saved for ${r.runDate} · ${r.qualifying} qualifying.`,
       );

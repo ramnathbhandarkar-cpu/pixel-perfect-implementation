@@ -1,13 +1,8 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
-import { useServerFn } from "@tanstack/react-start";
 import { PageHeader, PageBody, DisclaimerFooter } from "@/components/app-shell";
 import { supabase } from "@/integrations/supabase/client";
-import {
-  ingestCandles,
-  ingestCsvCandles,
-  syncInstruments,
-} from "@/lib/kite.functions";
+import { callSwing } from "@/lib/swing-api";
 import type { Candle, Overlay } from "@/components/candle-chart";
 
 // Chart uses browser-only lightweight-charts — lazy-load behind a client gate.
@@ -21,8 +16,7 @@ export const Route = createFileRoute("/_authenticated/charts")({
       { title: "Charts · Swing Trade" },
       {
         name: "description",
-        content:
-          "Candlestick charts with MA/BB/RSI/VWAP indicators and level overlays.",
+        content: "Candlestick charts with MA/BB/RSI/VWAP indicators and level overlays.",
       },
     ],
   }),
@@ -66,10 +60,6 @@ function ChartsScreen() {
   const [showBB, setShowBB] = useState(false);
   const [showVWAP, setShowVWAP] = useState(false);
   const [showRSI, setShowRSI] = useState(true);
-
-  const ingest = useServerFn(ingestCandles);
-  const ingestCsv = useServerFn(ingestCsvCandles);
-  const syncInst = useServerFn(syncInstruments);
 
   // Load active stocks for symbol switcher
   useEffect(() => {
@@ -141,7 +131,10 @@ function ChartsScreen() {
     setErr(null);
     setMsg(null);
     try {
-      const r = await ingest({ data: { symbol, timeframe } });
+      const r = await callSwing<{ inserted: number }>("ingest_candles", {
+        symbol,
+        timeframe,
+      });
       setMsg(`Ingested ${r.inserted} candles.`);
       await loadCandles();
     } catch (e) {
@@ -156,7 +149,7 @@ function ChartsScreen() {
     setErr(null);
     setMsg(null);
     try {
-      const r = await syncInst();
+      const r = await callSwing<{ count: number }>("sync_instruments");
       setMsg(`Synced ${r.count} NSE instruments.`);
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
@@ -172,7 +165,11 @@ function ChartsScreen() {
     setMsg(null);
     try {
       const text = await file.text();
-      const r = await ingestCsv({ data: { symbol, timeframe, csv: text } });
+      const r = await callSwing<{ inserted: number }>("ingest_csv", {
+        symbol,
+        timeframe,
+        csv: text,
+      });
       setMsg(`Imported ${r.inserted} candles from CSV.`);
       await loadCandles();
     } catch (e) {
@@ -218,10 +215,7 @@ function ChartsScreen() {
 
   return (
     <>
-      <PageHeader
-        title="Charts"
-        subtitle="Candlesticks · indicators · level overlays"
-      />
+      <PageHeader title="Charts" subtitle="Candlesticks · indicators · level overlays" />
       <PageBody>
         <div className="space-y-4">
           {/* Symbol + timeframe controls */}
@@ -349,7 +343,9 @@ function ChartsScreen() {
               </div>
             ) : (
               <Suspense
-                fallback={<div className="p-12 text-center text-sm text-muted-fg">Loading chart…</div>}
+                fallback={
+                  <div className="p-12 text-center text-sm text-muted-fg">Loading chart…</div>
+                }
               >
                 <CandleChart
                   candles={candles}
@@ -377,9 +373,7 @@ function ChartsScreen() {
                   <span className="text-faint uppercase tracking-widest mr-1">Trend</span>
                   <span
                     className={
-                      level.trend_context === "DOWNTREND"
-                        ? "text-warning"
-                        : "text-foreground"
+                      level.trend_context === "DOWNTREND" ? "text-warning" : "text-foreground"
                     }
                   >
                     {level.trend_context}
@@ -405,7 +399,8 @@ function ChartsScreen() {
 
           <div className="text-[11px] text-faint">
             CSV format: <code className="text-muted-fg">timestamp,open,high,low,close,volume</code>.
-            Timestamps as ISO 8601 (e.g. <code className="text-muted-fg">2026-07-24T09:15:00+05:30</code>).
+            Timestamps as ISO 8601 (e.g.{" "}
+            <code className="text-muted-fg">2026-07-24T09:15:00+05:30</code>).
           </div>
         </div>
       </PageBody>

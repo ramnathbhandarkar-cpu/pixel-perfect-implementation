@@ -2,6 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { PageHeader, PageBody, DisclaimerFooter } from "@/components/app-shell";
 import { supabase } from "@/integrations/supabase/client";
+import { callSwing } from "@/lib/swing-api";
 
 export const Route = createFileRoute("/_authenticated/settings")({
   head: () => ({
@@ -15,16 +16,18 @@ export const Route = createFileRoute("/_authenticated/settings")({
 
 type Provider = "kite" | "manual";
 
-interface KiteMeta {
-  updated_at?: string;
+interface KiteStatus {
+  api_key_masked?: string | null;
+  token_updated_at?: string | null;
 }
 
 function SettingsScreen() {
   const [provider, setProvider] = useState<Provider>("kite");
   const [apiKey, setApiKey] = useState("");
   const [accessToken, setAccessToken] = useState("");
-  const [tokenMeta, setTokenMeta] = useState<KiteMeta | null>(null);
+  const [status, setStatus] = useState<KiteStatus | null>(null);
   const [saving, setSaving] = useState(false);
+  const [running, setRunning] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
@@ -33,17 +36,15 @@ function SettingsScreen() {
     (async () => {
       const { data } = await supabase
         .from("settings")
-        .select("key, value, updated_at")
-        .in("key", ["provider", "kite_credentials"]);
+        .select("key, value")
+        .in("key", ["provider", "kite_status"]);
       if (!mounted || !data) return;
       for (const row of data) {
         if (row.key === "provider" && row.value?.name) {
           setProvider(row.value.name === "manual" ? "manual" : "kite");
         }
-        if (row.key === "kite_credentials" && row.value) {
-          setApiKey(row.value.api_key ?? "");
-          setAccessToken(row.value.access_token ?? "");
-          setTokenMeta({ updated_at: row.updated_at ?? row.value.updated_at });
+        if (row.key === "kite_status" && row.value) {
+          setStatus(row.value as KiteStatus);
         }
       }
     })();
@@ -52,25 +53,27 @@ function SettingsScreen() {
     };
   }, []);
 
-  async function save() {
+  async function saveProvider(p: Provider) {
+    setProvider(p);
+    const { error } = await supabase
+      .from("settings")
+      .upsert({ key: "provider", value: { name: p } }, { onConflict: "user_id,key" });
+    if (error) setErr(error.message);
+  }
+
+  async function saveToken() {
     setSaving(true);
     setMsg(null);
     setErr(null);
     try {
-      const now = new Date().toISOString();
-      const rows = [
-        { key: "provider", value: { name: provider } },
-        {
-          key: "kite_credentials",
-          value: { api_key: apiKey, access_token: accessToken, updated_at: now },
-        },
-      ];
-      const { error } = await supabase
-        .from("settings")
-        .upsert(rows, { onConflict: "user_id,key" });
-      if (error) throw error;
-      setTokenMeta({ updated_at: now });
-      setMsg("Saved.");
+      const r = await callSwing<KiteStatus & { ok: boolean }>("set_kite_token", {
+        api_key: apiKey,
+        access_token: accessToken,
+      });
+      setStatus({ api_key_masked: r.api_key_masked, token_updated_at: r.token_updated_at });
+      setApiKey("");
+      setAccessToken("");
+      setMsg("Token saved server-side. The browser never stores it.");
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
     } finally {
@@ -78,8 +81,29 @@ function SettingsScreen() {
     }
   }
 
-  const tokenAgeHours = tokenMeta?.updated_at
-    ? (Date.now() - new Date(tokenMeta.updated_at).getTime()) / 3_600_000
+  async function runJob(action: "refresh_candles" | "nightly") {
+    setRunning(action);
+    setMsg(null);
+    setErr(null);
+    try {
+      const r = await callSwing<Record<string, unknown>>(
+        action,
+        action === "refresh_candles" ? { force: true } : {},
+      );
+      setMsg(
+        r.skipped
+          ? `Skipped: ${String(r.skipped)}`
+          : `${action === "refresh_candles" ? "Refresh" : "Nightly job"} done.`,
+      );
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setRunning(null);
+    }
+  }
+
+  const tokenAgeHours = status?.token_updated_at
+    ? (Date.now() - new Date(status.token_updated_at).getTime()) / 3_600_000
     : null;
   const stale = tokenAgeHours != null && tokenAgeHours > 8;
 
@@ -94,15 +118,15 @@ function SettingsScreen() {
                 "text-xs px-3 py-2 rounded border " +
                 (stale
                   ? "bg-warning/10 text-warning border-warning/40"
-                  : tokenMeta?.updated_at
+                  : status?.token_updated_at
                     ? "bg-bullish/10 text-bullish border-bullish/30"
                     : "bg-surface-raised text-muted-fg border-border")
               }
             >
-              {tokenMeta?.updated_at
+              {status?.token_updated_at
                 ? stale
                   ? `Kite access token is ${tokenAgeHours!.toFixed(1)}h old. Kite tokens expire daily — paste a fresh one.`
-                  : `Token saved ${new Date(tokenMeta.updated_at).toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })} IST`
+                  : `Token saved ${new Date(status.token_updated_at).toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })} IST`
                 : "No Kite access token saved yet."}
             </div>
           )}
@@ -110,13 +134,14 @@ function SettingsScreen() {
           <section className="surface p-5">
             <h2 className="text-sm font-semibold text-foreground">Market data provider</h2>
             <p className="text-xs text-muted-fg mt-1">
-              The provider fetches candles for your active symbols. Kite is primary; Manual accepts CSV uploads.
+              The provider fetches candles for your active symbols. Kite is primary; Manual accepts
+              CSV uploads.
             </p>
             <div className="mt-3 flex gap-2">
               {(["kite", "manual"] as Provider[]).map((p) => (
                 <button
                   key={p}
-                  onClick={() => setProvider(p)}
+                  onClick={() => saveProvider(p)}
                   className={
                     "text-xs px-3 py-1.5 rounded border transition-colors " +
                     (provider === p
@@ -133,48 +158,73 @@ function SettingsScreen() {
           <section className="surface p-5">
             <h2 className="text-sm font-semibold text-foreground">Kite credentials</h2>
             <p className="text-xs text-muted-fg mt-1">
-              Kite access tokens expire daily. Paste a fresh token each morning.
-              Credentials are stored per-user with RLS.
+              Stored server-side only — the browser sends them once and can never read them back.
+              Kite tokens expire daily; paste a fresh one each morning.
             </p>
             <div className="mt-4 space-y-3">
               <label className="block">
-                <span className="text-xs text-muted-fg">API key</span>
+                <span className="text-xs text-muted-fg">
+                  API key{" "}
+                  {status?.api_key_masked ? (
+                    <span className="font-mono text-faint">
+                      (saved: {status.api_key_masked} — leave blank to keep)
+                    </span>
+                  ) : null}
+                </span>
                 <input
                   value={apiKey}
                   onChange={(e) => setApiKey(e.target.value)}
+                  placeholder={status?.api_key_masked ?? ""}
                   className="mt-1 w-full font-mono bg-surface-raised border border-border rounded-md px-3 py-2 text-sm"
                   autoComplete="off"
                 />
               </label>
               <label className="block">
-                <span className="text-xs text-muted-fg">Access token</span>
+                <span className="text-xs text-muted-fg">Access token (today's)</span>
                 <input
                   value={accessToken}
                   onChange={(e) => setAccessToken(e.target.value)}
+                  type="password"
                   className="mt-1 w-full font-mono bg-surface-raised border border-border rounded-md px-3 py-2 text-sm"
                   autoComplete="off"
                 />
               </label>
             </div>
+            <div className="mt-4 flex items-center gap-3">
+              <button
+                onClick={saveToken}
+                disabled={saving || !accessToken.trim()}
+                className="btn-primary hover:btn-primary-hover disabled:opacity-60"
+              >
+                {saving ? "Saving…" : "Save token"}
+              </button>
+              {msg && <span className="text-xs text-bullish">{msg}</span>}
+              {err && <span className="text-xs text-bearish">{err}</span>}
+            </div>
           </section>
-
-          <div className="flex items-center gap-3">
-            <button
-              onClick={save}
-              disabled={saving}
-              className="btn-primary hover:btn-primary-hover disabled:opacity-60"
-            >
-              {saving ? "Saving…" : "Save settings"}
-            </button>
-            {msg && <span className="text-xs text-bullish">{msg}</span>}
-            {err && <span className="text-xs text-bearish">{err}</span>}
-          </div>
 
           <section className="surface p-5">
             <h2 className="text-sm font-semibold text-foreground">Data health</h2>
             <p className="text-xs text-muted-fg mt-1">
-              Candle ingestion, cron jobs, and provider health checks arrive in Phase 2.
+              Scheduled jobs run server-side: candle refresh every 5 minutes during market hours,
+              levels + screener at 15:45 IST. Run either now to test:
             </p>
+            <div className="mt-3 flex gap-2">
+              <button
+                onClick={() => runJob("refresh_candles")}
+                disabled={running !== null}
+                className="text-xs px-3 py-1.5 rounded border border-border text-muted-fg hover:text-foreground disabled:opacity-60"
+              >
+                {running === "refresh_candles" ? "Running…" : "Refresh candles now"}
+              </button>
+              <button
+                onClick={() => runJob("nightly")}
+                disabled={running !== null}
+                className="text-xs px-3 py-1.5 rounded border border-border text-muted-fg hover:text-foreground disabled:opacity-60"
+              >
+                {running === "nightly" ? "Running…" : "Run nightly job now"}
+              </button>
+            </div>
           </section>
         </div>
       </PageBody>
