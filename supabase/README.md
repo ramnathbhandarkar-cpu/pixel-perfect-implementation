@@ -28,15 +28,35 @@ RLS is enabled on every table, `user_id` is `NOT NULL DEFAULT auth.uid()`,
 `anon` has been stripped of all table grants, and a trigger on `auth.users`
 rejects any second signup.
 
-Still to run once (needs a Supabase access token, which only the owner can
-mint — one command):
+### The one remaining step
+
+The edge-function deploy needs credentials that cannot be reached from the
+build sandbox (its network policy refuses `api.supabase.com`, `*.supabase.co`
+and the database port alike), so it runs from CI. Pick either route:
+
+**A — CI, recommended.** Add two repository secrets under
+*Settings → Secrets and variables → Actions*:
+
+| Secret | Where to get it |
+| --- | --- |
+| `SUPABASE_ACCESS_TOKEN` | supabase.com/dashboard/account/tokens |
+| `SUPABASE_DB_URL` | Settings → Database → Connection string → URI |
+
+Then run *Actions → “Deploy Supabase backend” → Run workflow*. It deploys the
+function, checks it refuses anonymous calls, schedules both cron jobs, prints
+the RLS/grants/row-count report, and smoke-tests Kite. From then on it
+re-deploys automatically whenever anything under `supabase/functions/`
+changes — no further action, ever.
+
+**B — one local command**, if you'd rather not store secrets in GitHub:
 
 ```bash
 bash scripts/finish-setup.sh sbp_YOUR_TOKEN
+# optionally, to schedule cron in the same run:
+DB_URL='postgresql://...' bash scripts/finish-setup.sh sbp_YOUR_TOKEN
 ```
 
-That deploys the edge function and, if you also pass `DB_URL=...`, schedules
-both cron jobs. Until it runs:
+Until one of those runs:
 
 - ✅ Login, Stocks, Plans, Positions, Scorecard, Journal, Alerts inbox,
   Screener, Charts, CSV import, export and offline all work.
