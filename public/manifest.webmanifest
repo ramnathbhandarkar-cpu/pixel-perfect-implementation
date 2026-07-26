@@ -1,0 +1,14 @@
+{
+  "name": "Swing Trade",
+  "short_name": "Swing Trade",
+  "description": "A trading discipline system for NSE swing traders.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0f0f11",
+  "theme_color": "#0f0f11",
+  "icons": [
+    { "src": "/favicon.ico", "sizes": "64x64", "type": "image/x-icon" }
+  ]
+}
