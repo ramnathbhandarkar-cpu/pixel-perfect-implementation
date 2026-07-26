@@ -75,15 +75,12 @@ function StocksScreen() {
     setBusy(true);
     setErr(null);
     try {
-      const { data: u } = await supabase.auth.getUser();
-      if (!u.user) throw new Error("Not signed in");
       const symbols = bulk
         .split(/[\s,;\n]+/)
         .map((s) => s.trim().toUpperCase())
         .filter(Boolean);
       if (!symbols.length) return;
       const rows = symbols.map((symbol) => ({
-        user_id: u.user!.id,
         symbol,
         list_type: tab === "archived" ? "core" : tab,
         advisory_quarter: tab === "advisory" ? bulkQuarter : null,
