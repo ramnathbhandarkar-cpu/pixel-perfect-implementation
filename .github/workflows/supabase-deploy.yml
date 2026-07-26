@@ -34,6 +34,8 @@ jobs:
       # secrets.* cannot be used in a step-level `if:`, so surface it here —
       # job-level env may reference secrets and `env` is allowed in `if`.
       DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+      KITE_API_KEY: ${{ secrets.KITE_API_KEY }}
+      KITE_API_SECRET: ${{ secrets.KITE_API_SECRET }}
     steps:
       - uses: actions/checkout@v4
 
@@ -87,6 +89,46 @@ jobs:
           psql "$PGURL" -qtAX -c \
             "select jobname || '  |  ' || schedule || '  |  active=' || active
              from cron.job order by jobname;"
+
+      # Optional: seed the Kite API key/secret so the app's one-tap "Connect
+      # Kite" works without anyone typing them in. Add KITE_API_KEY and
+      # KITE_API_SECRET as repository secrets to use this. The values land in
+      # server_secrets (RLS deny-all) and never in the repository.
+      - name: Seed Kite API key and secret
+        if: env.DB_URL != '' && env.KITE_API_KEY != '' && env.KITE_API_SECRET != ''
+        env:
+          PGURL: ${{ env.DB_URL }}
+          KITE_API_KEY: ${{ secrets.KITE_API_KEY }}
+          KITE_API_SECRET: ${{ secrets.KITE_API_SECRET }}
+        run: |
+          psql "$PGURL" -v ON_ERROR_STOP=1 \
+            -v key="$KITE_API_KEY" -v secret="$KITE_API_SECRET" <<'SQL'
+          insert into public.server_secrets (key, value)
+          values ('kite_api', jsonb_build_object('api_key', :'key', 'api_secret', :'secret'))
+          on conflict (key) do update
+            set value = excluded.value, updated_at = now();
+
+          -- Carry the api_key onto the credentials row so an exchange can find it.
+          insert into public.server_secrets (key, value)
+          values ('kite_credentials', jsonb_build_object('api_key', :'key'))
+          on conflict (key) do update
+            set value = public.server_secrets.value || jsonb_build_object('api_key', :'key'),
+                updated_at = now();
+
+          -- Masked status for the Settings banner (never the secret itself).
+          insert into public.settings (user_id, key, value)
+          select (select id from auth.users order by created_at limit 1),
+                 'kite_status',
+                 jsonb_build_object(
+                   'api_key_masked', '••••' || right(:'key', 4),
+                   'api_secret_saved', true)
+          on conflict (user_id, key) do update
+            set value = public.settings.value
+                        || jsonb_build_object(
+                             'api_key_masked', '••••' || right(:'key', 4),
+                             'api_secret_saved', true);
+          SQL
+          echo "Kite API key/secret seeded server-side."
 
       - name: Report database state
         if: env.DB_URL != ''

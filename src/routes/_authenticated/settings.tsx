@@ -21,6 +21,8 @@ type Provider = "kite" | "manual";
 interface KiteStatus {
   api_key_masked?: string | null;
   token_updated_at?: string | null;
+  api_secret_saved?: boolean | null;
+  kite_user_id?: string | null;
 }
 
 function SettingsScreen() {
@@ -38,6 +40,72 @@ function SettingsScreen() {
   const [exportTable, setExportTable] = useState<ExportTable>("positions");
   const [exporting, setExporting] = useState(false);
   const [exportMsg, setExportMsg] = useState<string | null>(null);
+  const [apiSecret, setApiSecret] = useState("");
+  const [requestToken, setRequestToken] = useState("");
+  const [showManual, setShowManual] = useState(false);
+  const [connecting, setConnecting] = useState(false);
+  const [connectMsg, setConnectMsg] = useState<string | null>(null);
+
+  const redirectUrl =
+    typeof window === "undefined" ? "/kite/callback" : `${window.location.origin}/kite/callback`;
+
+  // Ask the server for the login URL (it holds the api_key) and go there.
+  async function connectKite() {
+    setConnecting(true);
+    setConnectMsg(null);
+    setErr(null);
+    setMsg(null);
+    try {
+      const r = await callSwing<{ login_url: string }>("kite_login_url");
+      window.location.href = r.login_url;
+    } catch (e) {
+      setConnectMsg(marketDataHint(e));
+      setShowManual(true);
+      setConnecting(false);
+    }
+  }
+
+  async function saveApiPair() {
+    setSaving(true);
+    setMsg(null);
+    setErr(null);
+    try {
+      const r = await callSwing<{ api_key_masked: string }>("kite_set_api", {
+        api_key: apiKey,
+        api_secret: apiSecret,
+      });
+      setStatus((s) => ({
+        ...(s ?? {}),
+        api_key_masked: r.api_key_masked,
+        api_secret_saved: true,
+      }));
+      setApiKey("");
+      setApiSecret("");
+      setMsg("API key and secret saved server-side. “Connect Kite” will work now.");
+    } catch (e) {
+      setErr(marketDataHint(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function exchangeToken() {
+    setSaving(true);
+    setMsg(null);
+    setErr(null);
+    try {
+      const r = await callSwing<KiteStatus>("kite_exchange", { request_token: requestToken });
+      setStatus(r);
+      setRequestToken("");
+      setMsg(
+        `Connected${r.kite_user_id ? ` as ${r.kite_user_id}` : ""}. Today's token is stored server-side.`,
+      );
+    } catch (e) {
+      setErr(marketDataHint(e));
+    } finally {
+      setSaving(false);
+    }
+  }
 
   useEffect(() => {
     let mounted = true;
@@ -200,51 +268,130 @@ function SettingsScreen() {
             </div>
           </section>
 
+          {/* Daily connect — one tap, no token handling */}
           <section className="surface p-5">
-            <h2 className="text-sm font-semibold text-foreground">Kite credentials</h2>
+            <h2 className="text-sm font-semibold text-foreground">Connect to Kite</h2>
             <p className="text-xs text-muted-fg mt-1">
-              Stored server-side only — the browser sends them once and can never read them back.
-              Kite tokens expire daily; paste a fresh one each morning.
+              Kite access tokens last one trading day and Zerodha issues no refresh token, so the
+              login has to happen once each morning. This is the whole of it: tap Connect,
+              authenticate on Zerodha's own page, and the token is exchanged and stored server-side
+              automatically. You never copy a token.
             </p>
-            <div className="mt-4 space-y-3">
-              <label className="block">
-                <span className="text-xs text-muted-fg">
-                  API key{" "}
-                  {status?.api_key_masked ? (
-                    <span className="font-mono text-faint">
-                      (saved: {status.api_key_masked} — leave blank to keep)
-                    </span>
-                  ) : null}
-                </span>
-                <input
-                  value={apiKey}
-                  onChange={(e) => setApiKey(e.target.value)}
-                  placeholder={status?.api_key_masked ?? ""}
-                  className="mt-1 w-full font-mono bg-surface-raised border border-border rounded-md px-3 py-2 text-sm"
-                  autoComplete="off"
-                />
-              </label>
-              <label className="block">
-                <span className="text-xs text-muted-fg">Access token (today's)</span>
-                <input
-                  value={accessToken}
-                  onChange={(e) => setAccessToken(e.target.value)}
-                  type="password"
-                  className="mt-1 w-full font-mono bg-surface-raised border border-border rounded-md px-3 py-2 text-sm"
-                  autoComplete="off"
-                />
-              </label>
-            </div>
-            <div className="mt-4 flex items-center gap-3">
+            <div className="mt-3 flex flex-wrap items-center gap-2">
               <button
-                onClick={saveToken}
-                disabled={saving || !accessToken.trim()}
+                onClick={connectKite}
+                disabled={connecting}
                 className="btn-primary hover:btn-primary-hover disabled:opacity-60"
               >
-                {saving ? "Saving…" : "Save token"}
+                {connecting ? "Opening Kite…" : "Connect Kite"}
               </button>
+              <button
+                onClick={() => setShowManual((v) => !v)}
+                className="text-xs px-3 py-1.5 rounded border border-border text-muted-fg hover:text-foreground"
+              >
+                {showManual ? "Hide manual options" : "Manual options"}
+              </button>
+              {connectMsg && <span className="text-xs text-bearish">{connectMsg}</span>}
+            </div>
+
+            {showManual && (
+              <div className="mt-4 space-y-4 border-t border-border pt-4">
+                <div>
+                  <h3 className="text-xs font-semibold text-foreground">
+                    Paste the redirect URL or request_token
+                  </h3>
+                  <p className="text-[11px] text-muted-fg mt-1">
+                    Use this if the redirect lands somewhere else — copy the whole address you were
+                    sent to (or just the <code>request_token</code> from it). The exchange still
+                    happens server-side, so no Python and no api_secret in the browser.
+                  </p>
+                  <div className="mt-2 flex gap-2">
+                    <input
+                      value={requestToken}
+                      onChange={(e) => setRequestToken(e.target.value)}
+                      placeholder="https://…/kite/callback?request_token=abc123&action=login"
+                      className="flex-1 font-mono bg-surface-raised border border-border rounded-md px-2.5 py-1.5 text-xs"
+                      autoComplete="off"
+                    />
+                    <button
+                      onClick={exchangeToken}
+                      disabled={saving || !requestToken.trim()}
+                      className="text-xs px-3 py-1.5 rounded border border-border text-muted-fg hover:text-foreground disabled:opacity-60"
+                    >
+                      Exchange
+                    </button>
+                  </div>
+                </div>
+
+                <div>
+                  <h3 className="text-xs font-semibold text-foreground">API key and secret</h3>
+                  <p className="text-[11px] text-muted-fg mt-1">
+                    Set once, from your Kite Connect app. Stored server-side and never readable by
+                    the browser.
+                    {status?.api_secret_saved ? " A secret is currently saved." : ""}
+                  </p>
+                  <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <input
+                      value={apiKey}
+                      onChange={(e) => setApiKey(e.target.value)}
+                      placeholder={status?.api_key_masked ?? "api_key"}
+                      className="font-mono bg-surface-raised border border-border rounded-md px-2.5 py-1.5 text-xs"
+                      autoComplete="off"
+                    />
+                    <input
+                      value={apiSecret}
+                      onChange={(e) => setApiSecret(e.target.value)}
+                      placeholder="api_secret"
+                      type="password"
+                      className="font-mono bg-surface-raised border border-border rounded-md px-2.5 py-1.5 text-xs"
+                      autoComplete="off"
+                    />
+                  </div>
+                  <button
+                    onClick={saveApiPair}
+                    disabled={saving || !apiKey.trim() || !apiSecret.trim()}
+                    className="mt-2 text-xs px-3 py-1.5 rounded border border-border text-muted-fg hover:text-foreground disabled:opacity-60"
+                  >
+                    Save key and secret
+                  </button>
+                </div>
+
+                <div>
+                  <h3 className="text-xs font-semibold text-foreground">
+                    Paste today's access token directly
+                  </h3>
+                  <p className="text-[11px] text-muted-fg mt-1">
+                    The old way, kept as a last resort if you already have a token in hand.
+                  </p>
+                  <div className="mt-2 flex gap-2">
+                    <input
+                      value={accessToken}
+                      onChange={(e) => setAccessToken(e.target.value)}
+                      type="password"
+                      placeholder="access_token"
+                      className="flex-1 font-mono bg-surface-raised border border-border rounded-md px-2.5 py-1.5 text-xs"
+                      autoComplete="off"
+                    />
+                    <button
+                      onClick={saveToken}
+                      disabled={saving || !accessToken.trim()}
+                      className="text-xs px-3 py-1.5 rounded border border-border text-muted-fg hover:text-foreground disabled:opacity-60"
+                    >
+                      Save token
+                    </button>
+                  </div>
+                </div>
+
+                <p className="text-[11px] text-faint">
+                  For one-tap Connect to work, the redirect URL on your Kite Connect app must be{" "}
+                  <code className="text-muted-fg">{redirectUrl}</code>.
+                </p>
+              </div>
+            )}
+
+            <div className="mt-3 flex items-center gap-3">
               {msg && <span className="text-xs text-bullish">{msg}</span>}
-              {err && <span className="text-xs text-bearish">{err}</span>}
+              {err && <span className="text-xs text-bearish whitespace-pre-wrap">{err}</span>}
             </div>
           </section>
 

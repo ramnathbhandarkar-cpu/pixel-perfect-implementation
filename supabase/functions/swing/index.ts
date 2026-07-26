@@ -16,6 +16,7 @@ import { createClient, type SupabaseClient } from "npm:@supabase/supabase-js@2";
 import webpush from "npm:web-push@3.6.7";
 import { computeLevels, type DailyCandle } from "./levels-engine.ts";
 import { runScreener, type ScreenerInput } from "./screener-engine.ts";
+import { extractRequestToken, kiteChecksum, kiteLoginUrl } from "./kite-login.ts";
 
 type Timeframe = "15m" | "1h" | "1d" | "1wk";
 const KITE_INTERVAL: Record<Timeframe, string> = {
@@ -131,6 +132,106 @@ async function kiteCreds(): Promise<KiteCreds> {
     throw new Error("Kite credentials not set. Save them in Settings first.");
   }
   return { api_key: v.api_key, access_token: v.access_token };
+}
+
+// ── Kite login (request_token → access_token) ────────────────
+//
+// Zerodha's flow: send the user to the Kite login page, they authenticate
+// (password + 2FA on Zerodha's own site), Kite redirects back with a
+// one-shot request_token, and the server exchanges it using
+// checksum = SHA256(api_key + request_token + api_secret).
+//
+// The api_secret never leaves the server, and the exchange is the only part
+// that can be automated — Zerodha issues no refresh token, so the login
+// itself is interactive by design and must happen once per trading day.
+
+async function kiteApiKeyPair(): Promise<{ api_key: string; api_secret: string }> {
+  const v = await getSecret("kite_api");
+  if (!v?.api_key || !v?.api_secret) {
+    throw new Error(
+      "Kite API key/secret not saved yet. Add them once in Settings → Kite credentials.",
+    );
+  }
+  return { api_key: v.api_key, api_secret: v.api_secret };
+}
+
+async function actionKiteLoginUrl() {
+  const { api_key } = await kiteApiKeyPair();
+  return { login_url: kiteLoginUrl(api_key) };
+}
+
+async function actionKiteSetApi(uid: string | null, body: Record<string, unknown>) {
+  const apiKey = String(body.api_key ?? "").trim();
+  const apiSecret = String(body.api_secret ?? "").trim();
+  if (!apiKey || !apiSecret) throw new Error("api_key and api_secret are both required");
+  await setSecret("kite_api", { api_key: apiKey, api_secret: apiSecret });
+  // Keep the api_key on the credentials row too, so a later exchange has it.
+  const existing = (await getSecret("kite_credentials")) ?? {};
+  await setSecret("kite_credentials", { ...existing, api_key: apiKey });
+  const masked = apiKey.length > 4 ? `••••${apiKey.slice(-4)}` : "••••";
+  const { error } = await db.from("settings").upsert(
+    {
+      user_id: uid,
+      key: "kite_status",
+      value: {
+        api_key_masked: masked,
+        token_updated_at: existing.updated_at ?? null,
+        api_secret_saved: true,
+      },
+    },
+    { onConflict: "user_id,key" },
+  );
+  if (error) throw new Error(`Status write failed: ${error.message}`);
+  return { ok: true, api_key_masked: masked };
+}
+
+async function actionKiteExchange(uid: string | null, body: Record<string, unknown>) {
+  const { api_key, api_secret } = await kiteApiKeyPair();
+  const requestToken = extractRequestToken(String(body.request_token ?? ""));
+  const checksum = await kiteChecksum(api_key, requestToken, api_secret);
+
+  const res = await fetch("https://api.kite.trade/session/token", {
+    method: "POST",
+    headers: {
+      "X-Kite-Version": "3",
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: new URLSearchParams({ api_key, request_token: requestToken, checksum }),
+  });
+  const payload = (await res.json()) as {
+    status?: string;
+    data?: { access_token?: string; user_id?: string; user_name?: string };
+    message?: string;
+    error_type?: string;
+  };
+  if (!res.ok || payload.status !== "success" || !payload.data?.access_token) {
+    // A request_token is single-use and expires within minutes — say so
+    // rather than surfacing Kite's terse "Token is invalid".
+    const detail = payload.message ?? `HTTP ${res.status}`;
+    throw new Error(
+      `Kite login exchange failed: ${detail}. A request_token can only be used once and ` +
+        `expires within a few minutes — start the login again.`,
+    );
+  }
+
+  const now = new Date().toISOString();
+  await setSecret("kite_credentials", {
+    api_key,
+    access_token: payload.data.access_token,
+    updated_at: now,
+  });
+  const masked = api_key.length > 4 ? `••••${api_key.slice(-4)}` : "••••";
+  const status = {
+    api_key_masked: masked,
+    token_updated_at: now,
+    api_secret_saved: true,
+    kite_user_id: payload.data.user_id ?? null,
+  };
+  const { error } = await db
+    .from("settings")
+    .upsert({ user_id: uid, key: "kite_status", value: status }, { onConflict: "user_id,key" });
+  if (error) console.error(`Status write failed: ${error.message}`);
+  return { ok: true, ...status };
 }
 
 const kiteHeaders = (c: KiteCreds) => ({
@@ -306,7 +407,11 @@ async function insertAlert(
 
 // ── Web Push (VAPID keys live in server_secrets.vapid) ───────
 
-async function vapidConfig(): Promise<{ publicKey: string; privateKey: string; subject: string } | null> {
+async function vapidConfig(): Promise<{
+  publicKey: string;
+  privateKey: string;
+  subject: string;
+} | null> {
   const v = await getSecret("vapid");
   if (!v?.public_key || !v?.private_key) return null;
   return {
@@ -316,7 +421,11 @@ async function vapidConfig(): Promise<{ publicKey: string; privateKey: string; s
   };
 }
 
-async function sendPushToAll(payload: { title: string; body: string; severity: string }): Promise<number> {
+async function sendPushToAll(payload: {
+  title: string;
+  body: string;
+  severity: string;
+}): Promise<number> {
   const cfg = await vapidConfig();
   if (!cfg) return 0; // push not configured — silently skip
   const { data: subs, error } = await db
@@ -398,7 +507,9 @@ async function evaluateAlertRules(uid: string | null): Promise<{ fired: number }
     if (candles.length === 0) continue;
     const last = candles[candles.length - 1];
     const prev = candles.length > 1 ? candles[candles.length - 2] : null;
-    const lastFired = rule.last_fired_candle ? new Date(rule.last_fired_candle as string).getTime() : null;
+    const lastFired = rule.last_fired_candle
+      ? new Date(rule.last_fired_candle as string).getTime()
+      : null;
 
     if (rule.rule_type === "volume_hourly" && rule.threshold != null) {
       const bucket = istHourBucket(last.ts);
@@ -1066,6 +1177,12 @@ Deno.serve(async (req) => {
         return json(await actionRefreshCandles(uid, body));
       case "nightly":
         return json(await actionNightly(uid));
+      case "kite_login_url":
+        return json(await actionKiteLoginUrl());
+      case "kite_set_api":
+        return json(await actionKiteSetApi(uid, body));
+      case "kite_exchange":
+        return json(await actionKiteExchange(uid, body));
       case "get_vapid_public":
         return json(await actionGetVapidPublic());
       case "push_subscribe":

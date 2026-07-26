@@ -67,6 +67,37 @@ Levels, the screener and CSV import deliberately run in the browser against
 the owner's own rows, so they never depend on the function being up. The
 scheduled job runs the same shared engines server-side.
 
+## Connecting to Kite each morning
+
+Kite access tokens last one trading day, and Zerodha issues **no refresh
+token** — the login is interactive by design. What can be automated is the
+exchange, and that is now fully server-side:
+
+1. Settings → **Connect Kite** sends you to Zerodha's own login page.
+2. You authenticate there (password + 2FA — Zerodha never lets a third party
+   do this for you).
+3. Kite redirects to `/kite/callback?request_token=…`, and the app exchanges
+   that token for the day's `access_token` using
+   `checksum = SHA256(api_key + request_token + api_secret)`.
+4. The token is written to `server_secrets`. You never see or copy it.
+
+So the daily cost is one tap, not a Python script. If your Zerodha session
+cookie is still alive, it is a single tap with no typing at all.
+
+**One Kite-side setting:** on your Kite Connect app
+(developers.kite.trade → your app), set the redirect URL to
+`https://rdbstocks.lovable.app/kite/callback`. Without it Kite sends the
+`request_token` somewhere else — in which case use Settings → Manual options
+and paste the address you landed on; the exchange still runs server-side.
+
+**Getting the api_key/api_secret in**, once ever — the secret is deliberately
+*not* committed, because this repository is public and a committed brokerage
+secret would let anyone mint sessions against the app:
+
+- Settings → Manual options → *API key and secret* → Save, or
+- add `KITE_API_KEY` / `KITE_API_SECRET` as repository secrets and let the
+  deploy workflow seed them.
+
 ## The two scheduled jobs
 
 | Job | Schedule (UTC) | IST | Work |
