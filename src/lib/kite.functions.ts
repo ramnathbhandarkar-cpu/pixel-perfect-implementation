@@ -1,55 +1,16 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 
-// Kite Connect intervals mapping to our timeframes
-const KITE_INTERVAL: Record<string, string> = {
-  "15m": "15minute",
-  "1h": "60minute",
-  "1d": "day",
-  "1wk": "week",
-};
-
-type Timeframe = "15m" | "1h" | "1d" | "1wk";
-
-interface KiteCreds {
-  api_key: string;
-  access_token: string;
-}
-
-async function loadKiteCreds(): Promise<KiteCreds> {
-  const { serverSupabase } = await import("@/integrations/supabase/server-client");
-  const supabase = serverSupabase();
-  const { data, error } = await supabase
-    .from("settings")
-    .select("value")
-    .eq("key", "kite_credentials")
-    .maybeSingle();
-  if (error) throw new Error(`Load kite creds failed: ${error.message}`);
-  const v = data?.value as KiteCreds | null;
-  if (!v?.api_key || !v?.access_token) {
-    throw new Error("Kite credentials not set. Save them in Settings first.");
-  }
-  return v;
-}
-
-function kiteHeaders(c: KiteCreds): Record<string, string> {
-  return {
-    "X-Kite-Version": "3",
-    Authorization: `token ${c.api_key}:${c.access_token}`,
-  };
-}
-
-function formatIST(d: Date): string {
-  // Kite expects "yyyy-mm-dd HH:MM:SS" in exchange (IST) time.
-  const ist = new Date(d.getTime() + 5.5 * 3600 * 1000);
-  return ist.toISOString().replace("T", " ").slice(0, 19);
-}
+// Kite fetch/upsert internals live in kite-api.server.ts so the pg_cron
+// ingest route can reuse them. These server functions stay the client-facing
+// entry points.
 
 // ─────────────────────────────────────────────────────────────
 // Sync NSE instruments (symbol → instrument_token)
 // ─────────────────────────────────────────────────────────────
 
 export const syncInstruments = createServerFn({ method: "POST" }).handler(async () => {
+  const { loadKiteCreds, kiteHeaders } = await import("@/lib/kite-api.server");
   const creds = await loadKiteCreds();
   const res = await fetch("https://api.kite.trade/instruments/NSE", {
     headers: kiteHeaders(creds),
@@ -105,29 +66,6 @@ export const syncInstruments = createServerFn({ method: "POST" }).handler(async 
 });
 
 // ─────────────────────────────────────────────────────────────
-// Look up instrument_token by symbol
-// ─────────────────────────────────────────────────────────────
-
-async function findInstrumentToken(symbol: string): Promise<number> {
-  const { serverSupabase } = await import("@/integrations/supabase/server-client");
-  const supabase = serverSupabase();
-  const { data, error } = await supabase
-    .from("instruments")
-    .select("instrument_token")
-    .eq("tradingsymbol", symbol)
-    .eq("exchange", "NSE")
-    .limit(1)
-    .maybeSingle();
-  if (error) throw new Error(`Instrument lookup failed: ${error.message}`);
-  if (!data) {
-    throw new Error(
-      `Instrument not found for ${symbol}. Run "Sync instruments" in Settings.`,
-    );
-  }
-  return data.instrument_token as number;
-}
-
-// ─────────────────────────────────────────────────────────────
 // Ingest candles from Kite
 // ─────────────────────────────────────────────────────────────
 
@@ -142,67 +80,19 @@ export const ingestCandles = createServerFn({ method: "POST" })
       .parse(raw),
   )
   .handler(async ({ data }) => {
-    const creds = await loadKiteCreds();
-    const token = await findInstrumentToken(data.symbol);
-    const interval = KITE_INTERVAL[data.timeframe];
+    const { fetchKiteCandles, upsertCandles } = await import("@/lib/kite-api.server");
 
     // Default lookback: 15m=60d, 1h=100d, 1d=365d, 1wk=365d
-    const defaults: Record<Timeframe, number> = {
-      "15m": 60,
-      "1h": 100,
-      "1d": 365,
-      "1wk": 365,
-    };
+    const defaults = { "15m": 60, "1h": 100, "1d": 365, "1wk": 365 } as const;
     const days = data.days ?? defaults[data.timeframe];
-    const to = new Date();
-    const from = new Date(to.getTime() - days * 86400 * 1000);
-    const url =
-      `https://api.kite.trade/instruments/historical/${token}/${interval}` +
-      `?from=${encodeURIComponent(formatIST(from))}&to=${encodeURIComponent(formatIST(to))}`;
-
-    const res = await fetch(url, { headers: kiteHeaders(creds) });
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(
-        `Kite historical fetch failed (${res.status}): ${text.slice(0, 250)}`,
-      );
-    }
-    const json = (await res.json()) as {
-      status: string;
-      data?: { candles?: Array<[string, number, number, number, number, number]> };
-      message?: string;
-    };
-    if (json.status !== "success" || !json.data?.candles) {
-      throw new Error(`Kite response: ${json.message ?? "no candles"}`);
-    }
-    const candles = json.data.candles;
-    if (candles.length === 0) {
+    const rows = await fetchKiteCandles(data.symbol, data.timeframe, days);
+    if (rows.length === 0) {
       return { symbol: data.symbol, timeframe: data.timeframe, inserted: 0 };
     }
 
-    const rows = candles.map((c) => ({
-      symbol: data.symbol,
-      timeframe: data.timeframe,
-      ts: new Date(c[0]).toISOString(),
-      open: c[1],
-      high: c[2],
-      low: c[3],
-      close: c[4],
-      volume: c[5],
-    }));
-
     const { serverSupabase } = await import("@/integrations/supabase/server-client");
     const supabase = serverSupabase();
-    // Upsert in batches
-    let inserted = 0;
-    for (let i = 0; i < rows.length; i += 500) {
-      const chunk = rows.slice(i, i + 500);
-      const { error } = await supabase
-        .from("candles")
-        .upsert(chunk, { onConflict: "user_id,symbol,timeframe,ts" });
-      if (error) throw new Error(`Candles upsert failed: ${error.message}`);
-      inserted += chunk.length;
-    }
+    const inserted = await upsertCandles(supabase, rows);
     return {
       symbol: data.symbol,
       timeframe: data.timeframe,
@@ -275,6 +165,7 @@ export const getKiteLtp = createServerFn({ method: "POST" })
     z.object({ symbols: z.array(z.string().min(1)).min(1).max(200) }).parse(raw),
   )
   .handler(async ({ data }) => {
+    const { loadKiteCreds, kiteHeaders } = await import("@/lib/kite-api.server");
     const creds = await loadKiteCreds();
     const params = data.symbols.map((s) => `i=NSE:${encodeURIComponent(s)}`).join("&");
     const res = await fetch(`https://api.kite.trade/quote/ltp?${params}`, {

@@ -15,12 +15,14 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as AuthenticatedTodayRouteImport } from './routes/_authenticated/today'
 import { Route as AuthenticatedStocksRouteImport } from './routes/_authenticated/stocks'
 import { Route as AuthenticatedSettingsRouteImport } from './routes/_authenticated/settings'
+import { Route as AuthenticatedScreenerRouteImport } from './routes/_authenticated/screener'
 import { Route as AuthenticatedScorecardRouteImport } from './routes/_authenticated/scorecard'
 import { Route as AuthenticatedPositionsRouteImport } from './routes/_authenticated/positions'
 import { Route as AuthenticatedPlansRouteImport } from './routes/_authenticated/plans'
 import { Route as AuthenticatedJournalRouteImport } from './routes/_authenticated/journal'
 import { Route as AuthenticatedChartsRouteImport } from './routes/_authenticated/charts'
 import { Route as AuthenticatedAlertsRouteImport } from './routes/_authenticated/alerts'
+import { Route as ApiPublicIngestRouteImport } from './routes/api/public/ingest'
 
 const AuthRoute = AuthRouteImport.update({
   id: '/auth',
@@ -49,6 +51,11 @@ const AuthenticatedStocksRoute = AuthenticatedStocksRouteImport.update({
 const AuthenticatedSettingsRoute = AuthenticatedSettingsRouteImport.update({
   id: '/settings',
   path: '/settings',
+  getParentRoute: () => AuthenticatedRouteRoute,
+} as any)
+const AuthenticatedScreenerRoute = AuthenticatedScreenerRouteImport.update({
+  id: '/screener',
+  path: '/screener',
   getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
 const AuthenticatedScorecardRoute = AuthenticatedScorecardRouteImport.update({
@@ -81,6 +88,11 @@ const AuthenticatedAlertsRoute = AuthenticatedAlertsRouteImport.update({
   path: '/alerts',
   getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
+const ApiPublicIngestRoute = ApiPublicIngestRouteImport.update({
+  id: '/api/public/ingest',
+  path: '/api/public/ingest',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -91,9 +103,11 @@ export interface FileRoutesByFullPath {
   '/plans': typeof AuthenticatedPlansRoute
   '/positions': typeof AuthenticatedPositionsRoute
   '/scorecard': typeof AuthenticatedScorecardRoute
+  '/screener': typeof AuthenticatedScreenerRoute
   '/settings': typeof AuthenticatedSettingsRoute
   '/stocks': typeof AuthenticatedStocksRoute
   '/today': typeof AuthenticatedTodayRoute
+  '/api/public/ingest': typeof ApiPublicIngestRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -104,9 +118,11 @@ export interface FileRoutesByTo {
   '/plans': typeof AuthenticatedPlansRoute
   '/positions': typeof AuthenticatedPositionsRoute
   '/scorecard': typeof AuthenticatedScorecardRoute
+  '/screener': typeof AuthenticatedScreenerRoute
   '/settings': typeof AuthenticatedSettingsRoute
   '/stocks': typeof AuthenticatedStocksRoute
   '/today': typeof AuthenticatedTodayRoute
+  '/api/public/ingest': typeof ApiPublicIngestRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -119,9 +135,11 @@ export interface FileRoutesById {
   '/_authenticated/plans': typeof AuthenticatedPlansRoute
   '/_authenticated/positions': typeof AuthenticatedPositionsRoute
   '/_authenticated/scorecard': typeof AuthenticatedScorecardRoute
+  '/_authenticated/screener': typeof AuthenticatedScreenerRoute
   '/_authenticated/settings': typeof AuthenticatedSettingsRoute
   '/_authenticated/stocks': typeof AuthenticatedStocksRoute
   '/_authenticated/today': typeof AuthenticatedTodayRoute
+  '/api/public/ingest': typeof ApiPublicIngestRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -134,9 +152,11 @@ export interface FileRouteTypes {
     | '/plans'
     | '/positions'
     | '/scorecard'
+    | '/screener'
     | '/settings'
     | '/stocks'
     | '/today'
+    | '/api/public/ingest'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -147,9 +167,11 @@ export interface FileRouteTypes {
     | '/plans'
     | '/positions'
     | '/scorecard'
+    | '/screener'
     | '/settings'
     | '/stocks'
     | '/today'
+    | '/api/public/ingest'
   id:
     | '__root__'
     | '/'
@@ -161,15 +183,18 @@ export interface FileRouteTypes {
     | '/_authenticated/plans'
     | '/_authenticated/positions'
     | '/_authenticated/scorecard'
+    | '/_authenticated/screener'
     | '/_authenticated/settings'
     | '/_authenticated/stocks'
     | '/_authenticated/today'
+    | '/api/public/ingest'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AuthenticatedRouteRoute: typeof AuthenticatedRouteRouteWithChildren
   AuthRoute: typeof AuthRoute
+  ApiPublicIngestRoute: typeof ApiPublicIngestRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -216,6 +241,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedSettingsRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
+    '/_authenticated/screener': {
+      id: '/_authenticated/screener'
+      path: '/screener'
+      fullPath: '/screener'
+      preLoaderRoute: typeof AuthenticatedScreenerRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
     '/_authenticated/scorecard': {
       id: '/_authenticated/scorecard'
       path: '/scorecard'
@@ -258,6 +290,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedAlertsRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
+    '/api/public/ingest': {
+      id: '/api/public/ingest'
+      path: '/api/public/ingest'
+      fullPath: '/api/public/ingest'
+      preLoaderRoute: typeof ApiPublicIngestRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -268,6 +307,7 @@ interface AuthenticatedRouteRouteChildren {
   AuthenticatedPlansRoute: typeof AuthenticatedPlansRoute
   AuthenticatedPositionsRoute: typeof AuthenticatedPositionsRoute
   AuthenticatedScorecardRoute: typeof AuthenticatedScorecardRoute
+  AuthenticatedScreenerRoute: typeof AuthenticatedScreenerRoute
   AuthenticatedSettingsRoute: typeof AuthenticatedSettingsRoute
   AuthenticatedStocksRoute: typeof AuthenticatedStocksRoute
   AuthenticatedTodayRoute: typeof AuthenticatedTodayRoute
@@ -280,6 +320,7 @@ const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedPlansRoute: AuthenticatedPlansRoute,
   AuthenticatedPositionsRoute: AuthenticatedPositionsRoute,
   AuthenticatedScorecardRoute: AuthenticatedScorecardRoute,
+  AuthenticatedScreenerRoute: AuthenticatedScreenerRoute,
   AuthenticatedSettingsRoute: AuthenticatedSettingsRoute,
   AuthenticatedStocksRoute: AuthenticatedStocksRoute,
   AuthenticatedTodayRoute: AuthenticatedTodayRoute,
@@ -292,7 +333,18 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AuthenticatedRouteRoute: AuthenticatedRouteRouteWithChildren,
   AuthRoute: AuthRoute,
+  ApiPublicIngestRoute: ApiPublicIngestRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
+
+import type { getRouter } from './router.tsx'
+import type { startInstance } from './start.ts'
+declare module '@tanstack/react-start' {
+  interface Register {
+    ssr: true
+    router: Awaited<ReturnType<typeof getRouter>>
+    config: Awaited<ReturnType<typeof startInstance.getOptions>>
+  }
+}

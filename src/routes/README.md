@@ -10,6 +10,7 @@ TanStack Start file-based routing.
 | `/auth` | `auth.tsx` | public sign-in / sign-up |
 | `/today` | `_authenticated/today.tsx` | protected |
 | `/charts` | `_authenticated/charts.tsx` | protected |
+| `/screener` | `_authenticated/screener.tsx` | protected |
 | `/plans` | `_authenticated/plans.tsx` | protected |
 | `/positions` | `_authenticated/positions.tsx` | protected |
 | `/scorecard` | `_authenticated/scorecard.tsx` | protected |
@@ -17,6 +18,7 @@ TanStack Start file-based routing.
 | `/alerts` | `_authenticated/alerts.tsx` | protected |
 | `/stocks` | `_authenticated/stocks.tsx` | protected |
 | `/settings` | `_authenticated/settings.tsx` | protected |
+| `/api/public/ingest` | `api/public/ingest.ts` | `x-ingest-secret` header (pg_cron) |
 
 The `_authenticated/route.tsx` pathless layout is `ssr: false` and checks
 Supabase session in `beforeLoad`, redirecting to `/auth` when signed out.

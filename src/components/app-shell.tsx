@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import {
   Activity,
   LineChart,
+  ScanSearch,
   ClipboardList,
   Wallet,
   Trophy,
@@ -26,6 +27,7 @@ type NavItem = {
 const NAV: NavItem[] = [
   { to: "/today", label: "Today", short: "Today", icon: Activity, mobile: true },
   { to: "/charts", label: "Charts", short: "Charts", icon: LineChart, mobile: true },
+  { to: "/screener", label: "Screener", short: "Screen", icon: ScanSearch },
   { to: "/plans", label: "Plans", short: "Plans", icon: ClipboardList, mobile: true },
   { to: "/positions", label: "Positions", short: "Positions", icon: Wallet, mobile: true },
   { to: "/scorecard", label: "Scorecard", short: "Score", icon: Trophy },
@@ -49,9 +51,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       {/* Desktop sidebar */}
       <aside className="hidden md:flex flex-col w-56 shrink-0 border-r border-border bg-surface">
         <div className="px-4 py-4 border-b border-border">
-          <div className="text-xs text-faint tracking-widest uppercase">
-            Swing Trade
-          </div>
+          <div className="text-xs text-faint tracking-widest uppercase">Swing Trade</div>
           <div className="text-sm text-muted-fg mt-0.5">NSE · IST</div>
         </div>
         <nav className="flex-1 overflow-y-auto py-2">
@@ -84,9 +84,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       </aside>
 
       {/* Main */}
-      <main className="flex-1 min-w-0 flex flex-col pb-16 md:pb-0">
-        {children}
-      </main>
+      <main className="flex-1 min-w-0 flex flex-col pb-16 md:pb-0">{children}</main>
 
       {/* Mobile bottom tab bar */}
       <nav className="md:hidden fixed bottom-0 left-0 right-0 h-14 border-t border-border bg-surface flex items-stretch z-40">
@@ -112,6 +110,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           className={
             "flex-1 flex flex-col items-center justify-center gap-0.5 text-[10px] " +
             (path === "/settings" ||
+            path === "/screener" ||
             path === "/scorecard" ||
             path === "/journal" ||
             path === "/alerts" ||
@@ -140,12 +139,8 @@ export function PageHeader({
   return (
     <header className="border-b border-border px-5 md:px-6 py-4 flex items-start justify-between gap-4 bg-background">
       <div className="min-w-0">
-        <h1 className="text-lg md:text-xl font-semibold tracking-tight text-foreground">
-          {title}
-        </h1>
-        {subtitle && (
-          <p className="text-xs text-muted-fg mt-0.5">{subtitle}</p>
-        )}
+        <h1 className="text-lg md:text-xl font-semibold tracking-tight text-foreground">{title}</h1>
+        {subtitle && <p className="text-xs text-muted-fg mt-0.5">{subtitle}</p>}
       </div>
       {actions && <div className="flex items-center gap-2">{actions}</div>}
     </header>
