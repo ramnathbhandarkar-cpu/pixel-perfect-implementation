@@ -136,7 +136,7 @@ export function CandleChart({
               ? null
               : { time: c.time as UTCTimestamp, value: values[i] as number },
           )
-          .filter((p): p is { time: Time; value: number } => p !== null),
+          .filter((p): p is { time: UTCTimestamp; value: number } => p !== null),
       );
       return s;
     }
@@ -190,7 +190,7 @@ export function CandleChart({
               ? null
               : { time: c.time as UTCTimestamp, value: rsiVals[i] as number },
           )
-          .filter((p): p is { time: Time; value: number } => p !== null),
+          .filter((p): p is { time: UTCTimestamp; value: number } => p !== null),
       );
       rsiSeries.createPriceLine({
         price: 70,
