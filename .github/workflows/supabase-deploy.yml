@@ -1,0 +1,118 @@
+name: Deploy Supabase backend
+
+# Manual, one-shot deploy of the `swing` edge function and the pg_cron
+# schedules. Run from the Actions tab (or via the API) and paste the two
+# values in — nothing secret is stored in the repository.
+#
+# Rotate both credentials afterwards: workflow inputs are recorded in the
+# run's event payload and visible to anyone who can read this repo.
+
+on:
+  workflow_dispatch:
+    inputs:
+      supabase_access_token:
+        description: "Supabase access token (sbp_...) — from /account/tokens"
+        required: true
+      db_url:
+        description: "Postgres connection string (optional; schedules pg_cron when set)"
+        required: false
+        default: ""
+      run_smoke_test:
+        description: "After deploying, call the function and print the result"
+        required: false
+        default: "true"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      PROJECT_REF: mskymzputorcvqehjugq
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Mask the inputs in the log
+        run: |
+          echo "::add-mask::${{ inputs.supabase_access_token }}"
+          if [ -n "${{ inputs.db_url }}" ]; then
+            echo "::add-mask::${{ inputs.db_url }}"
+          fi
+
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Deploy the swing edge function
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ inputs.supabase_access_token }}
+        run: |
+          # --no-verify-jwt: the function authenticates callers itself
+          # (owner JWT for app actions, x-ingest-secret for cron).
+          supabase functions deploy swing \
+            --project-ref "$PROJECT_REF" \
+            --no-verify-jwt
+
+      - name: Confirm the function is live and rejects anonymous calls
+        run: |
+          code="$(curl -s -o /tmp/body.txt -w '%{http_code}' -X POST \
+            "https://${PROJECT_REF}.supabase.co/functions/v1/swing" \
+            -H 'Content-Type: application/json' \
+            -d '{"action":"nightly"}' || true)"
+          echo "unauthenticated POST -> HTTP $code"
+          head -c 300 /tmp/body.txt || true
+          echo
+          if [ "$code" != "401" ]; then
+            echo "::warning::expected 401 from an unauthenticated call, got $code"
+          fi
+
+      - name: Schedule the pg_cron jobs
+        if: ${{ inputs.db_url != '' }}
+        env:
+          PGURL: ${{ inputs.db_url }}
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client
+          psql "$PGURL" -v ON_ERROR_STOP=1 -f supabase/cron.sql
+          echo "--- scheduled jobs ---"
+          psql "$PGURL" -qtAX -c \
+            "select jobname || '  |  ' || schedule || '  |  active=' || active from cron.job order by jobname;"
+
+      - name: Report database state
+        if: ${{ inputs.db_url != '' }}
+        env:
+          PGURL: ${{ inputs.db_url }}
+        run: |
+          echo "--- RLS per table (all must be true) ---"
+          psql "$PGURL" -qtAX -c \
+            "select tablename || '=' || rowsecurity from pg_tables where schemaname='public' order by tablename;"
+          echo "--- anon grants on public tables (must be empty) ---"
+          psql "$PGURL" -qtAX -c \
+            "select table_name || ':' || privilege_type from information_schema.role_table_grants
+             where grantee='anon' and table_schema='public';"
+          echo "--- server_secrets keys (names only) ---"
+          psql "$PGURL" -qtAX -c "select key from public.server_secrets order by key;"
+          echo "--- row counts ---"
+          psql "$PGURL" -qtAX -c \
+            "select 'stocks='||(select count(*) from public.stocks)
+                 ||' candles='||(select count(*) from public.candles)
+                 ||' levels='||(select count(*) from public.levels)
+                 ||' screener_runs='||(select count(*) from public.screener_runs);"
+
+      - name: Kite smoke test through the function
+        if: ${{ inputs.run_smoke_test == 'true' }}
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ inputs.supabase_access_token }}
+          PGURL: ${{ inputs.db_url }}
+        run: |
+          if [ -z "$PGURL" ]; then
+            echo "no db_url given — skipping (the ingest secret lives in the database)"
+            exit 0
+          fi
+          sudo apt-get install -y -qq postgresql-client || true
+          SECRET="$(psql "$PGURL" -qtAX -c \
+            "select value->>'value' from public.server_secrets where key='ingest_secret';")"
+          echo "::add-mask::$SECRET"
+          echo "Calling sync_instruments (proves the stored Kite token works)…"
+          curl -s -X POST "https://${PROJECT_REF}.supabase.co/functions/v1/swing" \
+            -H 'Content-Type: application/json' \
+            -H "x-ingest-secret: $SECRET" \
+            -d '{"action":"sync_instruments"}' | head -c 600
+          echo

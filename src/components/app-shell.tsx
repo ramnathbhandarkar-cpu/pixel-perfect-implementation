@@ -14,6 +14,7 @@ import {
   ListChecks,
   LogOut,
   MoreHorizontal,
+  X,
 } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 
@@ -38,9 +39,27 @@ const NAV: NavItem[] = [
   { to: "/settings", label: "Settings", short: "Settings", icon: Settings },
 ];
 
+// Sections that don't fit in the mobile tab bar and live behind "More".
+const SECONDARY = NAV.filter((n) => !n.mobile);
+
 export function AppShell({ children }: { children: ReactNode }) {
   const path = useRouterState({ select: (s) => s.location.pathname });
   const navigate = useNavigate();
+  const [moreOpen, setMoreOpen] = useState(false);
+
+  // Close the sheet on navigation and on Escape.
+  useEffect(() => {
+    setMoreOpen(false);
+  }, [path]);
+
+  useEffect(() => {
+    if (!moreOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setMoreOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [moreOpen]);
 
   async function signOut() {
     await supabase.auth.signOut();
@@ -107,24 +126,70 @@ export function AppShell({ children }: { children: ReactNode }) {
             </Link>
           );
         })}
-        <Link
-          to="/settings"
+        <button
+          onClick={() => setMoreOpen(true)}
+          aria-label="More sections"
+          aria-expanded={moreOpen}
           className={
             "flex-1 flex flex-col items-center justify-center gap-0.5 text-[10px] " +
-            (path === "/settings" ||
-            path === "/screener" ||
-            path === "/scorecard" ||
-            path === "/journal" ||
-            path === "/alerts" ||
-            path === "/stocks"
-              ? "text-foreground"
-              : "text-muted-fg")
+            (SECONDARY.some((n) => n.to === path) || moreOpen ? "text-foreground" : "text-muted-fg")
           }
         >
           <MoreHorizontal size={18} />
           <span>More</span>
-        </Link>
+        </button>
       </nav>
+
+      {/* Mobile "More" sheet — every section the tab bar can't fit. Without
+          this, Screener/Scorecard/Journal/Alerts/Stocks were unreachable on
+          a phone. */}
+      {moreOpen && (
+        <div className="md:hidden fixed inset-0 z-50 flex flex-col justify-end">
+          <button
+            aria-label="Close menu"
+            onClick={() => setMoreOpen(false)}
+            className="absolute inset-0 bg-black/60"
+          />
+          <div className="relative bg-surface border-t border-border-strong rounded-t-xl pb-[max(env(safe-area-inset-bottom),0.5rem)]">
+            <div className="flex items-center justify-between px-4 py-3 border-b border-border">
+              <span className="text-xs text-faint uppercase tracking-widest">All sections</span>
+              <button
+                onClick={() => setMoreOpen(false)}
+                aria-label="Close"
+                className="text-muted-fg hover:text-foreground p-1"
+              >
+                <X size={16} />
+              </button>
+            </div>
+            <nav className="grid grid-cols-2 gap-px bg-border">
+              {NAV.map((n) => {
+                const Icon = n.icon;
+                const active = path === n.to;
+                return (
+                  <Link
+                    key={n.to}
+                    to={n.to}
+                    onClick={() => setMoreOpen(false)}
+                    className={
+                      "flex items-center gap-2.5 px-4 py-3.5 text-sm bg-surface " +
+                      (active ? "text-foreground" : "text-muted-fg")
+                    }
+                  >
+                    <Icon size={16} />
+                    <span>{n.label}</span>
+                  </Link>
+                );
+              })}
+            </nav>
+            <button
+              onClick={signOut}
+              className="w-full flex items-center gap-2 px-4 py-3.5 text-sm text-muted-fg border-t border-border"
+            >
+              <LogOut size={15} /> Sign out
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
