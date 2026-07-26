@@ -3,13 +3,8 @@ import { useEffect, useState } from "react";
 import { PageHeader, PageBody, DisclaimerFooter } from "@/components/app-shell";
 import { supabase } from "@/integrations/supabase/client";
 import { callSwing } from "@/lib/swing-api";
-import {
-  disablePush,
-  enablePush,
-  pushStatus,
-  sendTestPush,
-  type PushState,
-} from "@/lib/push";
+import { disablePush, enablePush, pushStatus, sendTestPush, type PushState } from "@/lib/push";
+import { EXPORT_TABLES, exportAllJson, exportTableCsv, type ExportTable } from "@/lib/export";
 
 export const Route = createFileRoute("/_authenticated/settings")({
   head: () => ({
@@ -40,6 +35,9 @@ function SettingsScreen() {
   const [push, setPush] = useState<PushState | null>(null);
   const [pushBusy, setPushBusy] = useState(false);
   const [pushMsg, setPushMsg] = useState<string | null>(null);
+  const [exportTable, setExportTable] = useState<ExportTable>("positions");
+  const [exporting, setExporting] = useState(false);
+  const [exportMsg, setExportMsg] = useState<string | null>(null);
 
   useEffect(() => {
     let mounted = true;
@@ -88,7 +86,11 @@ function SettingsScreen() {
     setPushMsg(null);
     try {
       const sent = await sendTestPush();
-      setPushMsg(sent > 0 ? `Test sent to ${sent} device${sent === 1 ? "" : "s"}.` : "No subscribed devices.");
+      setPushMsg(
+        sent > 0
+          ? `Test sent to ${sent} device${sent === 1 ? "" : "s"}.`
+          : "No subscribed devices.",
+      );
     } catch (e) {
       setPushMsg(e instanceof Error ? e.message : String(e));
     } finally {
@@ -273,8 +275,8 @@ function SettingsScreen() {
           <section className="surface p-5">
             <h2 className="text-sm font-semibold text-foreground">Notifications</h2>
             <p className="text-xs text-muted-fg mt-1">
-              Web Push delivers alerts to this device even when the app is closed —
-              including critical invalidation-line breaches.
+              Web Push delivers alerts to this device even when the app is closed — including
+              critical invalidation-line breaches.
             </p>
             <div className="mt-3 flex flex-wrap items-center gap-2">
               <button
@@ -282,7 +284,9 @@ function SettingsScreen() {
                 disabled={pushBusy || push === "unsupported" || push === "denied"}
                 className="btn-primary hover:btn-primary-hover text-xs disabled:opacity-60"
               >
-                {push === "subscribed" ? "Disable push on this device" : "Enable push on this device"}
+                {push === "subscribed"
+                  ? "Disable push on this device"
+                  : "Enable push on this device"}
               </button>
               {push === "subscribed" && (
                 <button
@@ -302,6 +306,64 @@ function SettingsScreen() {
                 </span>
               )}
               {pushMsg && <span className="text-xs text-muted-fg">{pushMsg}</span>}
+            </div>
+          </section>
+
+          <section className="surface p-5">
+            <h2 className="text-sm font-semibold text-foreground">Export</h2>
+            <p className="text-xs text-muted-fg mt-1">
+              Your data leaves whenever you want it to — positions, plans, discipline events,
+              screener history, journal, everything.
+            </p>
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <button
+                onClick={async () => {
+                  setExporting(true);
+                  setExportMsg(null);
+                  try {
+                    await exportAllJson();
+                    setExportMsg("JSON downloaded.");
+                  } catch (e) {
+                    setExportMsg(e instanceof Error ? e.message : String(e));
+                  } finally {
+                    setExporting(false);
+                  }
+                }}
+                disabled={exporting}
+                className="btn-primary hover:btn-primary-hover text-xs disabled:opacity-60"
+              >
+                {exporting ? "Exporting…" : "Download everything (JSON)"}
+              </button>
+              <select
+                value={exportTable}
+                onChange={(e) => setExportTable(e.target.value as ExportTable)}
+                className="bg-surface-raised border border-border rounded-md px-2.5 py-1.5 text-xs font-mono"
+              >
+                {EXPORT_TABLES.map((t) => (
+                  <option key={t} value={t}>
+                    {t}
+                  </option>
+                ))}
+              </select>
+              <button
+                onClick={async () => {
+                  setExporting(true);
+                  setExportMsg(null);
+                  try {
+                    await exportTableCsv(exportTable);
+                    setExportMsg("CSV downloaded.");
+                  } catch (e) {
+                    setExportMsg(e instanceof Error ? e.message : String(e));
+                  } finally {
+                    setExporting(false);
+                  }
+                }}
+                disabled={exporting}
+                className="text-xs px-3 py-1.5 rounded border border-border text-muted-fg hover:text-foreground disabled:opacity-60"
+              >
+                Download CSV
+              </button>
+              {exportMsg && <span className="text-xs text-muted-fg">{exportMsg}</span>}
             </div>
           </section>
         </div>

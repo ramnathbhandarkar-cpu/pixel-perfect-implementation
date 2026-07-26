@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { PageHeader, PageBody, DisclaimerFooter } from "@/components/app-shell";
 import { supabase } from "@/integrations/supabase/client";
 import { distanceToLinePct } from "@/lib/discipline";
+import { withCache, writeOrQueue } from "@/lib/offline";
 import { Pencil, Plus, X } from "lucide-react";
 
 export const Route = createFileRoute("/_authenticated/plans")({
@@ -55,46 +56,55 @@ function PlansScreen() {
   const [closes, setCloses] = useState<Map<string, { close: number; ts: string }>>(new Map());
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [cachedAt, setCachedAt] = useState<string | null>(null);
   const [editing, setEditing] = useState<WatchPlan | "new" | null>(null);
   const [resolving, setResolving] = useState<WatchPlan | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     setErr(null);
-    const { data, error } = await supabase
-      .from("watch_plans")
-      .select("*")
-      .order("created_at", { ascending: false });
-    if (error) {
-      setErr(error.message);
-      setLoading(false);
-      return;
-    }
-    const rows = (data ?? []) as WatchPlan[];
-    setPlans(rows);
-    const symbols = [...new Set(rows.map((p) => p.symbol))];
-    if (symbols.length) {
-      const cutoff = new Date(Date.now() - 21 * 86400 * 1000).toISOString();
-      const { data: candleRows } = await supabase
-        .from("candles")
-        .select("symbol, ts, close")
-        .eq("timeframe", "1d")
-        .in("symbol", symbols)
-        .gte("ts", cutoff)
-        .order("ts", { ascending: false })
-        .limit(2000);
-      const latest = new Map<string, { close: number; ts: string }>();
-      for (const row of candleRows ?? []) {
-        if (!latest.has(row.symbol as string)) {
-          latest.set(row.symbol as string, {
-            close: Number(row.close),
-            ts: row.ts as string,
-          });
+    try {
+      const result = await withCache("plans", async () => {
+        const { data, error } = await supabase
+          .from("watch_plans")
+          .select("*")
+          .order("created_at", { ascending: false });
+        if (error) throw new Error(error.message);
+        const rows = (data ?? []) as WatchPlan[];
+        const symbols = [...new Set(rows.map((p) => p.symbol))];
+        let closeEntries: [string, { close: number; ts: string }][] = [];
+        if (symbols.length) {
+          const cutoff = new Date(Date.now() - 21 * 86400 * 1000).toISOString();
+          const { data: candleRows } = await supabase
+            .from("candles")
+            .select("symbol, ts, close")
+            .eq("timeframe", "1d")
+            .in("symbol", symbols)
+            .gte("ts", cutoff)
+            .order("ts", { ascending: false })
+            .limit(2000);
+          const latest = new Map<string, { close: number; ts: string }>();
+          for (const row of candleRows ?? []) {
+            if (!latest.has(row.symbol as string)) {
+              latest.set(row.symbol as string, {
+                close: Number(row.close),
+                ts: row.ts as string,
+              });
+            }
+          }
+          closeEntries = [...latest.entries()];
         }
-      }
-      setCloses(latest);
+        return { rows, closeEntries };
+      });
+      setPlans(result.data.rows);
+      setCloses(new Map(result.data.closeEntries));
+      setCachedAt(result.cachedAt);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   }, []);
 
   useEffect(() => {
@@ -115,12 +125,18 @@ function PlansScreen() {
           }
         : c,
     );
-    const { error } = await supabase
-      .from("watch_plans")
-      .update({ [kind]: list })
-      .eq("id", plan.id);
-    if (error) setErr(error.message);
-    else void load();
+    try {
+      const outcome = await writeOrQueue(
+        "update",
+        "watch_plans",
+        { [kind]: list },
+        { id: plan.id },
+      );
+      if (outcome === "queued") setMsg("Offline — change queued, will sync when online.");
+      void load();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    }
   }
 
   const active = useMemo(() => plans.filter((p) => p.status === "active"), [plans]);
@@ -143,7 +159,19 @@ function PlansScreen() {
       />
       <PageBody>
         <div className="space-y-4">
+          {cachedAt && (
+            <div className="text-xs px-3 py-2 rounded border bg-warning/10 text-warning border-warning/40">
+              Offline — showing cached data as of{" "}
+              {new Date(cachedAt).toLocaleTimeString("en-IN", {
+                timeZone: "Asia/Kolkata",
+                hour: "2-digit",
+                minute: "2-digit",
+              })}
+              . Edits are queued and sync when the connection returns.
+            </div>
+          )}
           {err && <div className="text-xs text-bearish">{err}</div>}
+          {msg && <div className="text-xs text-muted-fg">{msg}</div>}
 
           {editing && (
             <PlanForm
@@ -466,13 +494,15 @@ function PlanForm({
       bearish_conditions: bearish.filter((c) => c.text.trim() !== ""),
       caveat: caveat.trim() || null,
     };
-    const q = plan
-      ? supabase.from("watch_plans").update(row).eq("id", plan.id)
-      : supabase.from("watch_plans").insert(row);
-    const { error } = await q;
-    setBusy(false);
-    if (error) setErr(error.message);
-    else onDone();
+    try {
+      if (plan) await writeOrQueue("update", "watch_plans", row, { id: plan.id });
+      else await writeOrQueue("insert", "watch_plans", row);
+      setBusy(false);
+      onDone();
+    } catch (e2) {
+      setBusy(false);
+      setErr(e2 instanceof Error ? e2.message : String(e2));
+    }
   }
 
   return (
@@ -640,18 +670,24 @@ function ResolveForm({
     e.preventDefault();
     if (!canSubmit) return;
     setBusy(true);
-    const { error } = await supabase
-      .from("watch_plans")
-      .update({
-        status,
-        outcome: outcome.trim(),
-        lessons: lessons.trim(),
-        resolved_at: new Date().toISOString(),
-      })
-      .eq("id", plan.id);
-    setBusy(false);
-    if (error) setErr(error.message);
-    else onDone();
+    try {
+      await writeOrQueue(
+        "update",
+        "watch_plans",
+        {
+          status,
+          outcome: outcome.trim(),
+          lessons: lessons.trim(),
+          resolved_at: new Date().toISOString(),
+        },
+        { id: plan.id },
+      );
+      setBusy(false);
+      onDone();
+    } catch (e2) {
+      setBusy(false);
+      setErr(e2 instanceof Error ? e2.message : String(e2));
+    }
   }
 
   return (

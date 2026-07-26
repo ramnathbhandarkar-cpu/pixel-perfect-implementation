@@ -11,6 +11,7 @@ import {
   unrealisedPnl,
   type Side,
 } from "@/lib/discipline";
+import { withCache, writeOrQueue } from "@/lib/offline";
 import { AlertTriangle, Plus, X } from "lucide-react";
 
 export const Route = createFileRoute("/_authenticated/positions")({
@@ -78,68 +79,75 @@ function PositionsScreen() {
   const [plans, setPlans] = useState<ActivePlan[]>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
+  const [cachedAt, setCachedAt] = useState<string | null>(null);
   const [showEntry, setShowEntry] = useState(false);
   const [closing, setClosing] = useState<Position | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     setErr(null);
-    const [posRes, planRes] = await Promise.all([
-      supabase.from("positions").select("*").order("entry_at", { ascending: false }),
-      supabase
-        .from("watch_plans")
-        .select(
-          "id, symbol, invalidation_line, target_zone_low, target_zone_high, plan_type, created_at",
-        )
-        .eq("status", "active")
-        .order("symbol"),
-    ]);
-    if (posRes.error) {
-      setErr(posRes.error.message);
-      setLoading(false);
-      return;
-    }
-    const rows = (posRes.data ?? []) as Position[];
-    setPositions(rows);
-    setPlans((planRes.data ?? []) as ActivePlan[]);
+    try {
+      const result = await withCache("positions", async () => {
+        const [posRes, planRes] = await Promise.all([
+          supabase.from("positions").select("*").order("entry_at", { ascending: false }),
+          supabase
+            .from("watch_plans")
+            .select(
+              "id, symbol, invalidation_line, target_zone_low, target_zone_high, plan_type, created_at",
+            )
+            .eq("status", "active")
+            .order("symbol"),
+        ]);
+        if (posRes.error) throw new Error(posRes.error.message);
+        const rows = (posRes.data ?? []) as Position[];
+        const plans = (planRes.data ?? []) as ActivePlan[];
 
-    const ids = rows.map((p) => p.id);
-    if (ids.length) {
-      const { data: events } = await supabase
-        .from("discipline_events")
-        .select("id, position_id, detected_at, price_at_detection")
-        .eq("event_type", "line_crossed")
-        .in("position_id", ids);
-      const map = new Map<string, LineEvent>();
-      for (const e of (events ?? []) as LineEvent[]) map.set(e.position_id, e);
-      setLineEvents(map);
-    } else {
-      setLineEvents(new Map());
-    }
-
-    const symbols = [...new Set(rows.map((p) => p.symbol))];
-    if (symbols.length) {
-      const cutoff = new Date(Date.now() - 21 * 86400 * 1000).toISOString();
-      const { data: candleRows } = await supabase
-        .from("candles")
-        .select("symbol, ts, close")
-        .in("timeframe", ["15m", "1d"])
-        .in("symbol", symbols)
-        .gte("ts", cutoff)
-        .order("ts", { ascending: false })
-        .limit(3000);
-      const latest = new Map<string, { close: number; ts: string }>();
-      for (const row of candleRows ?? []) {
-        if (!latest.has(row.symbol as string)) {
-          latest.set(row.symbol as string, {
-            close: Number(row.close),
-            ts: row.ts as string,
-          });
+        let eventEntries: [string, LineEvent][] = [];
+        const ids = rows.map((p) => p.id);
+        if (ids.length) {
+          const { data: events } = await supabase
+            .from("discipline_events")
+            .select("id, position_id, detected_at, price_at_detection")
+            .eq("event_type", "line_crossed")
+            .in("position_id", ids);
+          eventEntries = ((events ?? []) as LineEvent[]).map((e) => [e.position_id, e]);
         }
-      }
-      setCloses(latest);
+
+        let closeEntries: [string, { close: number; ts: string }][] = [];
+        const symbols = [...new Set(rows.map((p) => p.symbol))];
+        if (symbols.length) {
+          const cutoff = new Date(Date.now() - 21 * 86400 * 1000).toISOString();
+          const { data: candleRows } = await supabase
+            .from("candles")
+            .select("symbol, ts, close")
+            .in("timeframe", ["15m", "1d"])
+            .in("symbol", symbols)
+            .gte("ts", cutoff)
+            .order("ts", { ascending: false })
+            .limit(3000);
+          const latest = new Map<string, { close: number; ts: string }>();
+          for (const row of candleRows ?? []) {
+            if (!latest.has(row.symbol as string)) {
+              latest.set(row.symbol as string, {
+                close: Number(row.close),
+                ts: row.ts as string,
+              });
+            }
+          }
+          closeEntries = [...latest.entries()];
+        }
+        return { rows, plans, eventEntries, closeEntries };
+      });
+      setPositions(result.data.rows);
+      setPlans(result.data.plans);
+      setLineEvents(new Map(result.data.eventEntries));
+      setCloses(new Map(result.data.closeEntries));
+      setCachedAt(result.cachedAt);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   }, []);
 
   useEffect(() => {
@@ -166,6 +174,17 @@ function PositionsScreen() {
       />
       <PageBody>
         <div className="space-y-4">
+          {cachedAt && (
+            <div className="text-xs px-3 py-2 rounded border bg-warning/10 text-warning border-warning/40">
+              Offline — showing cached data as of{" "}
+              {new Date(cachedAt).toLocaleTimeString("en-IN", {
+                timeZone: "Asia/Kolkata",
+                hour: "2-digit",
+                minute: "2-digit",
+              })}
+              . Prices here are NOT live. Edits are queued and sync when the connection returns.
+            </div>
+          )}
           {err && <div className="text-xs text-bearish">{err}</div>}
 
           {showEntry && (
@@ -397,21 +416,25 @@ function EntryForm({
     setErr(null);
     // Snapshot the plan's lines at entry — the plan may be edited later; the
     // position must remember what was agreed.
-    const { error } = await supabase.from("positions").insert({
-      symbol: plan.symbol,
-      plan_id: plan.id,
-      side,
-      qty: Number(qty),
-      entry_price: Number(price),
-      entry_at: new Date(entryAt).toISOString(),
-      status: "open",
-      invalidation_at_entry: Number(plan.invalidation_line),
-      target_at_entry: plan.target_zone_low ?? plan.target_zone_high,
-      entry_reason: reason.trim() || null,
-    });
-    setBusy(false);
-    if (error) setErr(error.message);
-    else onDone();
+    try {
+      await writeOrQueue("insert", "positions", {
+        symbol: plan.symbol,
+        plan_id: plan.id,
+        side,
+        qty: Number(qty),
+        entry_price: Number(price),
+        entry_at: new Date(entryAt).toISOString(),
+        status: "open",
+        invalidation_at_entry: Number(plan.invalidation_line),
+        target_at_entry: plan.target_zone_low ?? plan.target_zone_high,
+        entry_reason: reason.trim() || null,
+      });
+      setBusy(false);
+      onDone();
+    } catch (e2) {
+      setBusy(false);
+      setErr(e2 instanceof Error ? e2.message : String(e2));
+    }
   }
 
   if (plans.length === 0) {
@@ -583,56 +606,60 @@ function CloseForm({
       p.side,
       Number(charges) || 0,
     );
-    const { error } = await supabase
-      .from("positions")
-      .update({
-        status: "closed",
-        exit_price: Number(exitPrice),
-        exit_at: exitAtIso,
-        exit_reason: reason.trim(),
-        charges: Number(charges) || 0,
-        realised_pnl: pnl,
-      })
-      .eq("id", p.id);
-    if (error) {
-      setBusy(false);
-      setErr(error.message);
-      return;
-    }
+    try {
+      await writeOrQueue(
+        "update",
+        "positions",
+        {
+          status: "closed",
+          exit_price: Number(exitPrice),
+          exit_at: exitAtIso,
+          exit_reason: reason.trim(),
+          charges: Number(charges) || 0,
+          realised_pnl: pnl,
+        },
+        { id: p.id },
+      );
 
-    // Delay accounting: the breach event carries the cost of hesitating.
-    if (lineEvent) {
-      const hours = delayHours(lineEvent.detected_at, exitAtIso);
-      const cost =
-        lineEvent.price_at_detection != null
-          ? delayCost(Number(lineEvent.price_at_detection), Number(exitPrice), p.qty, p.side)
-          : null;
-      const honored = exitHonored(lineEvent.detected_at, exitAtIso);
-      await supabase
-        .from("discipline_events")
-        .update({
+      // Delay accounting: the breach event carries the cost of hesitating.
+      if (lineEvent) {
+        const hours = delayHours(lineEvent.detected_at, exitAtIso);
+        const cost =
+          lineEvent.price_at_detection != null
+            ? delayCost(Number(lineEvent.price_at_detection), Number(exitPrice), p.qty, p.side)
+            : null;
+        const honored = exitHonored(lineEvent.detected_at, exitAtIso);
+        await writeOrQueue(
+          "update",
+          "discipline_events",
+          {
+            acted_at: exitAtIso,
+            price_at_action: Number(exitPrice),
+            delay_hours: Math.round(hours * 100) / 100,
+            delay_cost: cost == null ? null : Math.round(cost * 100) / 100,
+          },
+          { id: lineEvent.id },
+        );
+        await writeOrQueue("insert", "discipline_events", {
+          position_id: p.id,
+          event_type: honored ? "exit_honored" : "exit_delayed",
+          detected_at: lineEvent.detected_at,
           acted_at: exitAtIso,
+          price_at_detection: lineEvent.price_at_detection,
           price_at_action: Number(exitPrice),
           delay_hours: Math.round(hours * 100) / 100,
           delay_cost: cost == null ? null : Math.round(cost * 100) / 100,
-        })
-        .eq("id", lineEvent.id);
-      await supabase.from("discipline_events").insert({
-        position_id: p.id,
-        event_type: honored ? "exit_honored" : "exit_delayed",
-        detected_at: lineEvent.detected_at,
-        acted_at: exitAtIso,
-        price_at_detection: lineEvent.price_at_detection,
-        price_at_action: Number(exitPrice),
-        delay_hours: Math.round(hours * 100) / 100,
-        delay_cost: cost == null ? null : Math.round(cost * 100) / 100,
-        note: honored
-          ? "Exited within one trading session of the breach."
-          : "Exit came later than one trading session after the breach.",
-      });
+          note: honored
+            ? "Exited within one trading session of the breach."
+            : "Exit came later than one trading session after the breach.",
+        });
+      }
+      setBusy(false);
+      onDone();
+    } catch (e2) {
+      setBusy(false);
+      setErr(e2 instanceof Error ? e2.message : String(e2));
     }
-    setBusy(false);
-    onDone();
   }
 
   return (
