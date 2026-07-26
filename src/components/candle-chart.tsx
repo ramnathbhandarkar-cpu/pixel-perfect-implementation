@@ -15,8 +15,9 @@ import {
   rsi as rsiFn,
   bollinger,
   vwap as vwapFn,
-export type { Candle } from "@/lib/indicators";
-import type { Candle } from "@/lib/indicators";
+  type Candle,
+} from "@/lib/indicators";
+export type { Candle };
 
 export interface Overlay {
   price: number;
