@@ -38,3 +38,35 @@ self.addEventListener("fetch", (event) => {
       .catch(() => caches.match(req).then((r) => r || caches.match("/"))),
   );
 });
+
+/* Phase 5 — Web Push */
+self.addEventListener("push", (event) => {
+  let payload = { title: "Swing Trade", body: "", severity: "info" };
+  try {
+    payload = Object.assign(payload, event.data ? event.data.json() : {});
+  } catch (e) {
+    /* keep defaults */
+  }
+  event.waitUntil(
+    self.registration.showNotification(payload.title, {
+      body: payload.body,
+      tag: payload.severity === "critical" ? "critical" : undefined,
+      renotify: payload.severity === "critical",
+      requireInteraction: payload.severity === "critical",
+      icon: "/favicon.ico",
+      badge: "/favicon.ico",
+    }),
+  );
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  event.waitUntil(
+    clients.matchAll({ type: "window", includeUncontrolled: true }).then((list) => {
+      for (const c of list) {
+        if ("focus" in c) return c.focus();
+      }
+      return clients.openWindow("/alerts");
+    }),
+  );
+});

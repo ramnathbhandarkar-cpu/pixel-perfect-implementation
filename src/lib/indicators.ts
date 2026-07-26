@@ -45,36 +45,9 @@ export function ema(values: number[], period: number): (number | null)[] {
   return out;
 }
 
+// RSI with Wilder's smoothing — single pass.
 export function rsi(values: number[], period = 14): (number | null)[] {
-  const out: (number | null)[] = [null];
-  let gains = 0;
-  let losses = 0;
-  for (let i = 1; i < values.length; i++) {
-    const d = values[i] - values[i - 1];
-    const g = d > 0 ? d : 0;
-    const l = d < 0 ? -d : 0;
-    if (i <= period) {
-      gains += g;
-      losses += l;
-      if (i === period) {
-        const avgG = gains / period;
-        const avgL = losses / period;
-        const rs = avgL === 0 ? 100 : avgG / avgL;
-        out.push(100 - 100 / (1 + rs));
-      } else out.push(null);
-      continue;
-    }
-    // Wilder smoothing
-    const prevG = ((out as (number | null)[])[i - 1] ?? 0) as number;
-    void prevG;
-    // Recompute using running averages
-    // Use previous smoothed averages
-    // Simpler: track avgG/avgL in closure vars
-    // We'll switch to state below
-    out.push(null); // placeholder – overwritten in second pass
-  }
-  // Second pass with proper Wilder smoothing
-  const rsiOut: (number | null)[] = new Array(values.length).fill(null);
+  const out: (number | null)[] = new Array(values.length).fill(null);
   let avgG = 0;
   let avgL = 0;
   for (let i = 1; i < values.length; i++) {
@@ -82,21 +55,25 @@ export function rsi(values: number[], period = 14): (number | null)[] {
     const g = d > 0 ? d : 0;
     const l = d < 0 ? -d : 0;
     if (i < period) {
+      // Seed period: accumulate raw gains/losses.
       avgG += g;
       avgL += l;
-    } else if (i === period) {
+      continue;
+    }
+    if (i === period) {
       avgG = (avgG + g) / period;
       avgL = (avgL + l) / period;
-      const rs = avgL === 0 ? 100 : avgG / avgL;
-      rsiOut[i] = 100 - 100 / (1 + rs);
     } else {
       avgG = (avgG * (period - 1) + g) / period;
       avgL = (avgL * (period - 1) + l) / period;
-      const rs = avgL === 0 ? 100 : avgG / avgL;
-      rsiOut[i] = 100 - 100 / (1 + rs);
     }
+    // Degenerate cases are exact, not approximated: an unbroken run of gains
+    // is 100, an unbroken run of losses is 0.
+    if (avgL === 0) out[i] = avgG === 0 ? 50 : 100;
+    else if (avgG === 0) out[i] = 0;
+    else out[i] = 100 - 100 / (1 + avgG / avgL);
   }
-  return rsiOut;
+  return out;
 }
 
 export function bollinger(

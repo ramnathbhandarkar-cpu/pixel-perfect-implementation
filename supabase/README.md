@@ -1,48 +1,82 @@
 # Supabase — Swing Trade
 
-Project: `mskymzputorcvqehjugq`
+Project: `mskymzputorcvqehjugq` ("Swing Trades Stocks", ap-south-1)
 
 ## Layout
 
 - `migrations/` — timestamped SQL, the source of truth for schema changes.
-  Run each new file in the Supabase **SQL Editor** in filename order. Never
-  make ad-hoc dashboard edits, or the repo and the live DB drift apart.
-- `cron.sql` — pg_cron schedule **template** (deployment-specific values, so
-  it is not a migration). Fill in the placeholders before running.
-- `../SCHEMA.sql` — the original Phase 1 schema as designed (with auth +
-  RLS). The live DB has drifted from it: auth was removed during the Lovable
-  build. See the security note below.
+- `cron.sql` — the two pg_cron schedules. Reads the ingest secret from Vault,
+  so there is nothing to fill in; safe to run as-is and to re-run.
+- `functions/swing/` — the `swing` edge function: every Kite call, the
+  scheduled pipeline, line-crossed detection, alert rules, and Web Push.
+- `../SCHEMA.sql` — the original Phase 1 schema, kept for reference.
 
-## Phase 3 setup status
+## Status
 
-1. ✅ `migrations/20260726090000_phase3_levels_screener.sql` — **applied to
-   the live DB on 2026-07-26**. Besides the screener column and indexes, it
-   fixed two live defects found during verification:
-   - `instruments` had RLS enabled with no policies, silently blocking the
-     app's instrument sync/lookup → RLS disabled to match the other tables.
-   - Every `UNIQUE (user_id, …)` constraint was dead weight: `user_id` is
-     always NULL with auth removed, and NULLS-DISTINCT semantics meant
-     upserts duplicated rows instead of updating. All five were recreated as
-     `UNIQUE NULLS NOT DISTINCT`.
-2. ⬜ On the app deployment, set the environment variable `INGEST_SECRET` to
-   a long random string (e.g. output of `openssl rand -hex 32`). The
-   `/api/public/ingest` route refuses all requests until it is set.
-3. ⬜ In `cron.sql`, replace `{{APP_URL}}` with the deployed app URL and
-   `{{INGEST_SECRET}}` with the same secret, then run it in the SQL Editor
-   (pg_cron 1.6 and pg_net are available on the project, not yet enabled —
-   the script enables them).
-4. ⬜ Backfill history once per symbol: Charts → pick symbol → timeframe
-   `1d` → "Refresh from Kite" (fetches ~1 year). The 5-minute cron job only
-   tops up recent candles; it does not backfill.
+Applied to the live database:
 
-## ⚠ Security note — auth is currently removed (verified live 2026-07-26)
+| Migration | State |
+| --- | --- |
+| `20260726090000_phase3_levels_screener` | ✅ applied |
+| `20260726110000_task0_server_secrets` | ✅ applied |
+| `20260726130000_phase5_push_subscriptions` | ✅ applied |
+| `20260726120000_task0_rls_enable` | ✅ applied |
 
-RLS is **disabled on all 11 app tables**, and `anon` holds full
-select/insert/update/delete grants on every one of them. The publishable key
-ships in the client bundle, so **anyone who has the deployment URL can read
-and write the entire database** — trade history, position sizes, and the
-Kite credentials stored in `settings` included. This is tolerable only while
-the URL is truly private. The decision on restoring auth (or fronting
-Supabase with a secret-holding proxy) belongs to the owner — see Section 3
-of the Phase 3 handover. Do not quietly leave this as-is when the app is
-shared anywhere.
+Also live: `server_secrets` holds the Kite credentials, a 256-bit
+`ingest_secret` (also in Vault as `ingest_secret`), and the VAPID keypair.
+RLS is enabled on every table, `user_id` is `NOT NULL DEFAULT auth.uid()`,
+`anon` has been stripped of all table grants, and a trigger on `auth.users`
+rejects any second signup.
+
+Still to run once (needs a Supabase access token, which only the owner can
+mint — one command):
+
+```bash
+bash scripts/finish-setup.sh sbp_YOUR_TOKEN
+```
+
+That deploys the edge function and, if you also pass `DB_URL=...`, schedules
+both cron jobs. Until it runs:
+
+- ✅ Login, Stocks, Plans, Positions, Scorecard, Journal, Alerts inbox,
+  Screener, Charts, CSV import, export and offline all work.
+- ⏸️ Live Kite fetches ("Refresh from Kite", "Sync instruments") and the
+  scheduled 5-minute / 15:45 IST jobs wait on the deploy.
+
+Levels, the screener and CSV import deliberately run in the browser against
+the owner's own rows, so they never depend on the function being up. The
+scheduled job runs the same shared engines server-side.
+
+## The two scheduled jobs
+
+| Job | Schedule (UTC) | IST | Work |
+| --- | --- | --- | --- |
+| `swing-refresh-5min` | `*/5 3-10 * * 1-5` | 09:15–15:30 | top up 15m + 1d candles, check invalidation lines, evaluate alert rules |
+| `swing-nightly-1545` | `15 10 * * 1-5` | 15:45 | refresh dailies, recompute levels, run + persist the screener, summary alert |
+
+The function itself also refuses the refresh outside NSE hours, so the
+slightly-wide cron window is harmless.
+
+**Zero-row safety:** if a refresh returns no rows for *every* symbol, that is
+treated as provider failure — it raises a critical alert and leaves existing
+data untouched rather than overwriting good data with nothing.
+
+## Security posture (verified live 2026-07-26)
+
+Before: RLS was off on all 11 tables, `anon` held full read/write on every
+one of them, and the Kite API key + access token sat in `settings`, which the
+publishable key in the client bundle could read. Anyone with the URL had the
+whole database and the brokerage token.
+
+Now: auth is required, RLS restricts every row to `user_id = auth.uid()`,
+`anon` has no grants, and the Kite credentials live in `server_secrets`,
+which is RLS-deny-all and reachable only by the service role inside the edge
+function. The browser sends the daily token once and can never read it back —
+Settings shows only `••••` plus the token's age.
+
+A login screen alone would not have achieved this: the publishable key is
+visible in the page source, so anyone could have queried the database
+directly and never seen the login.
+
+To re-verify, run the checks in `migrations/20260726120000_task0_rls_enable.sql`
+and confirm a logged-out request with the publishable key returns no rows.

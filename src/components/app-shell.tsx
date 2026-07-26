@@ -1,5 +1,6 @@
 import { Link, useRouterState, useNavigate } from "@tanstack/react-router";
-import type { ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
+import { flushOutbox, outboxCount } from "@/lib/offline";
 import {
   Activity,
   LineChart,
@@ -75,6 +76,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             );
           })}
         </nav>
+        <OfflineStatus />
         <button
           onClick={signOut}
           className="flex items-center gap-2 px-4 py-3 text-xs text-muted-fg hover:text-foreground border-t border-border"
@@ -123,6 +125,44 @@ export function AppShell({ children }: { children: ReactNode }) {
           <span>More</span>
         </Link>
       </nav>
+    </div>
+  );
+}
+
+// Offline / queued-writes indicator. Flushes the outbox when the
+// connection returns and on a slow heartbeat.
+function OfflineStatus() {
+  const [online, setOnline] = useState(true);
+  const [queued, setQueued] = useState(0);
+
+  useEffect(() => {
+    const refresh = () => {
+      setOnline(navigator.onLine);
+      setQueued(outboxCount());
+    };
+    const onOnline = () => {
+      setOnline(true);
+      void flushOutbox().then(() => setQueued(outboxCount()));
+    };
+    refresh();
+    if (navigator.onLine && outboxCount() > 0) {
+      void flushOutbox().then(() => setQueued(outboxCount()));
+    }
+    window.addEventListener("online", onOnline);
+    window.addEventListener("offline", refresh);
+    const t = setInterval(refresh, 30_000);
+    return () => {
+      window.removeEventListener("online", onOnline);
+      window.removeEventListener("offline", refresh);
+      clearInterval(t);
+    };
+  }, []);
+
+  if (online && queued === 0) return null;
+  return (
+    <div className="px-4 py-2 text-[11px] border-t border-border font-mono text-warning">
+      {online ? `syncing ${queued} queued change${queued === 1 ? "" : "s"}…` : "offline"}
+      {!online && queued > 0 && ` · ${queued} queued`}
     </div>
   );
 }

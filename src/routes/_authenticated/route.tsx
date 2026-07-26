@@ -1,8 +1,15 @@
-import { createFileRoute, Outlet } from "@tanstack/react-router";
+import { createFileRoute, Outlet, redirect } from "@tanstack/react-router";
 import { AppShell } from "@/components/app-shell";
+import { supabase } from "@/integrations/supabase/client";
 
-// Personal single-user app: no auth gate.
+// Session gate. Note this guards the UI only — the real protection is RLS:
+// without a signed-in session the database returns nothing.
 export const Route = createFileRoute("/_authenticated")({
+  ssr: false,
+  beforeLoad: async () => {
+    const { data } = await supabase.auth.getSession();
+    if (!data.session) throw redirect({ to: "/auth" });
+  },
   component: () => (
     <AppShell>
       <Outlet />

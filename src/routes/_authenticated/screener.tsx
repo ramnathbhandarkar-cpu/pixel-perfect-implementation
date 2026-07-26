@@ -1,10 +1,9 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useServerFn } from "@tanstack/react-start";
 import { AlertTriangle } from "lucide-react";
 import { PageHeader, PageBody, DisclaimerFooter } from "@/components/app-shell";
 import { supabase } from "@/integrations/supabase/client";
-import { computeLevelsAndScreen } from "@/lib/phase3.functions";
+import { computeAndStoreLevels, loadActiveStocks, runAndStoreScreener } from "@/lib/pipeline";
 import {
   runScreener,
   sectorClusters,
@@ -60,10 +59,9 @@ function ScreenerScreen() {
   const [lastRun, setLastRun] = useState<RunRow | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
-
-  const runNow = useServerFn(computeLevelsAndScreen);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -168,19 +166,38 @@ function ScreenerScreen() {
     void load();
   }, [load]);
 
+  // Levels + screener need no secrets, so they run right here against the
+  // owner's own rows — no dependency on the market-data function being up.
   async function handleRun() {
     setBusy(true);
     setErr(null);
     setMsg(null);
+    setProgress(null);
     try {
-      const r = await runNow({ data: { recomputeLevels: true } });
-      setMsg(
-        `Levels recomputed for ${r.levels?.computed.length ?? 0} symbols · run saved for ${r.runDate} · ${r.qualifying} qualifying.`,
+      const stocks = await loadActiveStocks();
+      if (stocks.length === 0) throw new Error("No active symbols. Add stocks first.");
+      const levels = await computeAndStoreLevels(stocks, (done, total, sym) =>
+        setProgress(`Computing levels ${done}/${total} · ${sym}`),
       );
+      setProgress("Running screener…");
+      const screener = await runAndStoreScreener(stocks);
+      const parts = [
+        `Levels computed for ${levels.computed.length} of ${stocks.length} symbols`,
+        `${screener.result.qualifying.length} qualifying`,
+        `run saved for ${screener.runDate}`,
+      ];
+      if (levels.skippedInsufficientData.length) {
+        parts.push(
+          `${levels.skippedInsufficientData.length} skipped for thin history (need 60+ daily bars)`,
+        );
+      }
+      if (levels.failed.length) parts.push(`${levels.failed.length} failed`);
+      setMsg(`${parts.join(" · ")}.`);
       await load();
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
     } finally {
+      setProgress(null);
       setBusy(false);
     }
   }
@@ -238,6 +255,9 @@ function ScreenerScreen() {
             )}
           </div>
 
+          {progress && (
+            <div className="text-xs text-muted-fg px-1 font-mono animate-pulse">{progress}</div>
+          )}
           {msg && <div className="text-xs text-bullish px-1">{msg}</div>}
           {err && <div className="text-xs text-bearish px-1">{err}</div>}
 

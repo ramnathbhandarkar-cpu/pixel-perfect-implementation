@@ -14,6 +14,7 @@ declare module "bun:test" {
     toContain(item: unknown): void;
     toBeTruthy(): void;
     toBeFalsy(): void;
+    toThrow(expected?: string | RegExp | Error): void;
     not: Matchers;
   }
   export function describe(name: string, fn: () => void): void;
