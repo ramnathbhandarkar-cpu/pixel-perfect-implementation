@@ -1,21 +1,25 @@
-# Routes
+# Routes — Swing Trade
 
-TanStack Start uses **file-based routing**. Every `.tsx` file in this directory
-defines a route. Do **not** create `src/pages/`, `src/routes/_app/index.tsx`, or
-`app/layout.tsx` — those are Next.js / Remix conventions. The only root layout
-is `src/routes/__root.tsx`.
+TanStack Start file-based routing.
 
-## Conventions
+## Layout
 
-| File | URL |
-| --- | --- |
-| `index.tsx` | `/` |
-| `about.tsx` | `/about` |
-| `users/index.tsx` | `/users` |
-| `users/$id.tsx` | `/users/:id` (dynamic — bare `$`, no curly braces) |
-| `posts/{-$category}.tsx` | `/posts/:category?` (optional segment) |
-| `files/$.tsx` | `/files/*` (splat — read via `_splat` param, never `*`) |
-| `_layout.tsx` | layout route (renders children via `<Outlet />`) |
-| `__root.tsx` | app shell — wraps every page; preserve `<Outlet />` |
+| Path | File | Auth |
+| --- | --- | --- |
+| `/` | `index.tsx` | redirects → `/today` |
+| `/auth` | `auth.tsx` | public sign-in / sign-up |
+| `/today` | `_authenticated/today.tsx` | protected |
+| `/charts` | `_authenticated/charts.tsx` | protected |
+| `/plans` | `_authenticated/plans.tsx` | protected |
+| `/positions` | `_authenticated/positions.tsx` | protected |
+| `/scorecard` | `_authenticated/scorecard.tsx` | protected |
+| `/journal` | `_authenticated/journal.tsx` | protected |
+| `/alerts` | `_authenticated/alerts.tsx` | protected |
+| `/stocks` | `_authenticated/stocks.tsx` | protected |
+| `/settings` | `_authenticated/settings.tsx` | protected |
 
-`routeTree.gen.ts` is auto-generated. Don't edit it by hand.
+The `_authenticated/route.tsx` pathless layout is `ssr: false` and checks
+Supabase session in `beforeLoad`, redirecting to `/auth` when signed out.
+It also renders the `<AppShell>` (desktop sidebar + mobile bottom tabs).
+
+`routeTree.gen.ts` is auto-generated — never edit by hand.
