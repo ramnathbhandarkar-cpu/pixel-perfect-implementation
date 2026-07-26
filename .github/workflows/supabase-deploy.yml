@@ -31,6 +31,9 @@ jobs:
     runs-on: ubuntu-latest
     env:
       PROJECT_REF: mskymzputorcvqehjugq
+      # secrets.* cannot be used in a step-level `if:`, so surface it here —
+      # job-level env may reference secrets and `env` is allowed in `if`.
+      DB_URL: ${{ secrets.SUPABASE_DB_URL }}
     steps:
       - uses: actions/checkout@v4
 
@@ -71,13 +74,13 @@ jobs:
           fi
 
       - name: Install psql
-        if: ${{ secrets.SUPABASE_DB_URL != '' }}
+        if: env.DB_URL != ''
         run: sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client
 
       - name: Schedule the pg_cron jobs
-        if: ${{ secrets.SUPABASE_DB_URL != '' }}
+        if: env.DB_URL != ''
         env:
-          PGURL: ${{ secrets.SUPABASE_DB_URL }}
+          PGURL: ${{ env.DB_URL }}
         run: |
           psql "$PGURL" -v ON_ERROR_STOP=1 -f supabase/cron.sql
           echo "--- scheduled jobs ---"
@@ -86,9 +89,9 @@ jobs:
              from cron.job order by jobname;"
 
       - name: Report database state
-        if: ${{ secrets.SUPABASE_DB_URL != '' }}
+        if: env.DB_URL != ''
         env:
-          PGURL: ${{ secrets.SUPABASE_DB_URL }}
+          PGURL: ${{ env.DB_URL }}
         run: |
           echo "--- RLS per table (every one must be true) ---"
           psql "$PGURL" -qtAX -c \
@@ -109,9 +112,9 @@ jobs:
                  ||' screener_runs='||(select count(*) from public.screener_runs);"
 
       - name: Kite smoke test through the deployed function
-        if: ${{ secrets.SUPABASE_DB_URL != '' }}
+        if: env.DB_URL != ''
         env:
-          PGURL: ${{ secrets.SUPABASE_DB_URL }}
+          PGURL: ${{ env.DB_URL }}
         run: |
           SECRET="$(psql "$PGURL" -qtAX -c \
             "select value->>'value' from public.server_secrets where key='ingest_secret';")"
