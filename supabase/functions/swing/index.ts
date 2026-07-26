@@ -1014,7 +1014,15 @@ async function actionPushTest() {
 
 // ── handler ──────────────────────────────────────────────────
 
-const CRON_ACTIONS = new Set(["refresh_candles", "nightly"]);
+// Actions the shared-secret (cron/ops) caller may run. Data-pipeline only —
+// credential changes and push management always require the owner's JWT.
+const CRON_ACTIONS = new Set([
+  "refresh_candles",
+  "nightly",
+  "sync_instruments",
+  "ingest_candles",
+  "run_screener",
+]);
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
@@ -1036,7 +1044,7 @@ Deno.serve(async (req) => {
   }
   if (!role) return json({ error: "unauthorized" }, 401);
   if (role === "cron" && !CRON_ACTIONS.has(action)) {
-    return json({ error: "cron may only run refresh_candles / nightly" }, 403);
+    return json({ error: "this action requires a signed-in user" }, 403);
   }
 
   const uid = await ownerUid();
