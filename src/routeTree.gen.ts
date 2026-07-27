@@ -13,6 +13,7 @@ import { Route as AuthRouteImport } from './routes/auth'
 import { Route as AuthenticatedRouteRouteImport } from './routes/_authenticated/route'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as KiteCallbackRouteImport } from './routes/kite.callback'
+import { Route as AuthenticatedTradesRouteImport } from './routes/_authenticated/trades'
 import { Route as AuthenticatedTodayRouteImport } from './routes/_authenticated/today'
 import { Route as AuthenticatedStocksRouteImport } from './routes/_authenticated/stocks'
 import { Route as AuthenticatedSettingsRouteImport } from './routes/_authenticated/settings'
@@ -20,7 +21,9 @@ import { Route as AuthenticatedScreenerRouteImport } from './routes/_authenticat
 import { Route as AuthenticatedScorecardRouteImport } from './routes/_authenticated/scorecard'
 import { Route as AuthenticatedPositionsRouteImport } from './routes/_authenticated/positions'
 import { Route as AuthenticatedPlansRouteImport } from './routes/_authenticated/plans'
+import { Route as AuthenticatedMoreRouteImport } from './routes/_authenticated/more'
 import { Route as AuthenticatedJournalRouteImport } from './routes/_authenticated/journal'
+import { Route as AuthenticatedHomeRouteImport } from './routes/_authenticated/home'
 import { Route as AuthenticatedChartsRouteImport } from './routes/_authenticated/charts'
 import { Route as AuthenticatedAlertsRouteImport } from './routes/_authenticated/alerts'
 
@@ -42,6 +45,11 @@ const KiteCallbackRoute = KiteCallbackRouteImport.update({
   id: '/kite/callback',
   path: '/kite/callback',
   getParentRoute: () => rootRouteImport,
+} as any)
+const AuthenticatedTradesRoute = AuthenticatedTradesRouteImport.update({
+  id: '/trades',
+  path: '/trades',
+  getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
 const AuthenticatedTodayRoute = AuthenticatedTodayRouteImport.update({
   id: '/today',
@@ -78,9 +86,19 @@ const AuthenticatedPlansRoute = AuthenticatedPlansRouteImport.update({
   path: '/plans',
   getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
+const AuthenticatedMoreRoute = AuthenticatedMoreRouteImport.update({
+  id: '/more',
+  path: '/more',
+  getParentRoute: () => AuthenticatedRouteRoute,
+} as any)
 const AuthenticatedJournalRoute = AuthenticatedJournalRouteImport.update({
   id: '/journal',
   path: '/journal',
+  getParentRoute: () => AuthenticatedRouteRoute,
+} as any)
+const AuthenticatedHomeRoute = AuthenticatedHomeRouteImport.update({
+  id: '/home',
+  path: '/home',
   getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
 const AuthenticatedChartsRoute = AuthenticatedChartsRouteImport.update({
@@ -99,7 +117,9 @@ export interface FileRoutesByFullPath {
   '/auth': typeof AuthRoute
   '/alerts': typeof AuthenticatedAlertsRoute
   '/charts': typeof AuthenticatedChartsRoute
+  '/home': typeof AuthenticatedHomeRoute
   '/journal': typeof AuthenticatedJournalRoute
+  '/more': typeof AuthenticatedMoreRoute
   '/plans': typeof AuthenticatedPlansRoute
   '/positions': typeof AuthenticatedPositionsRoute
   '/scorecard': typeof AuthenticatedScorecardRoute
@@ -107,6 +127,7 @@ export interface FileRoutesByFullPath {
   '/settings': typeof AuthenticatedSettingsRoute
   '/stocks': typeof AuthenticatedStocksRoute
   '/today': typeof AuthenticatedTodayRoute
+  '/trades': typeof AuthenticatedTradesRoute
   '/kite/callback': typeof KiteCallbackRoute
 }
 export interface FileRoutesByTo {
@@ -114,7 +135,9 @@ export interface FileRoutesByTo {
   '/auth': typeof AuthRoute
   '/alerts': typeof AuthenticatedAlertsRoute
   '/charts': typeof AuthenticatedChartsRoute
+  '/home': typeof AuthenticatedHomeRoute
   '/journal': typeof AuthenticatedJournalRoute
+  '/more': typeof AuthenticatedMoreRoute
   '/plans': typeof AuthenticatedPlansRoute
   '/positions': typeof AuthenticatedPositionsRoute
   '/scorecard': typeof AuthenticatedScorecardRoute
@@ -122,6 +145,7 @@ export interface FileRoutesByTo {
   '/settings': typeof AuthenticatedSettingsRoute
   '/stocks': typeof AuthenticatedStocksRoute
   '/today': typeof AuthenticatedTodayRoute
+  '/trades': typeof AuthenticatedTradesRoute
   '/kite/callback': typeof KiteCallbackRoute
 }
 export interface FileRoutesById {
@@ -131,7 +155,9 @@ export interface FileRoutesById {
   '/auth': typeof AuthRoute
   '/_authenticated/alerts': typeof AuthenticatedAlertsRoute
   '/_authenticated/charts': typeof AuthenticatedChartsRoute
+  '/_authenticated/home': typeof AuthenticatedHomeRoute
   '/_authenticated/journal': typeof AuthenticatedJournalRoute
+  '/_authenticated/more': typeof AuthenticatedMoreRoute
   '/_authenticated/plans': typeof AuthenticatedPlansRoute
   '/_authenticated/positions': typeof AuthenticatedPositionsRoute
   '/_authenticated/scorecard': typeof AuthenticatedScorecardRoute
@@ -139,6 +165,7 @@ export interface FileRoutesById {
   '/_authenticated/settings': typeof AuthenticatedSettingsRoute
   '/_authenticated/stocks': typeof AuthenticatedStocksRoute
   '/_authenticated/today': typeof AuthenticatedTodayRoute
+  '/_authenticated/trades': typeof AuthenticatedTradesRoute
   '/kite/callback': typeof KiteCallbackRoute
 }
 export interface FileRouteTypes {
@@ -148,7 +175,9 @@ export interface FileRouteTypes {
     | '/auth'
     | '/alerts'
     | '/charts'
+    | '/home'
     | '/journal'
+    | '/more'
     | '/plans'
     | '/positions'
     | '/scorecard'
@@ -156,6 +185,7 @@ export interface FileRouteTypes {
     | '/settings'
     | '/stocks'
     | '/today'
+    | '/trades'
     | '/kite/callback'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -163,7 +193,9 @@ export interface FileRouteTypes {
     | '/auth'
     | '/alerts'
     | '/charts'
+    | '/home'
     | '/journal'
+    | '/more'
     | '/plans'
     | '/positions'
     | '/scorecard'
@@ -171,6 +203,7 @@ export interface FileRouteTypes {
     | '/settings'
     | '/stocks'
     | '/today'
+    | '/trades'
     | '/kite/callback'
   id:
     | '__root__'
@@ -179,7 +212,9 @@ export interface FileRouteTypes {
     | '/auth'
     | '/_authenticated/alerts'
     | '/_authenticated/charts'
+    | '/_authenticated/home'
     | '/_authenticated/journal'
+    | '/_authenticated/more'
     | '/_authenticated/plans'
     | '/_authenticated/positions'
     | '/_authenticated/scorecard'
@@ -187,6 +222,7 @@ export interface FileRouteTypes {
     | '/_authenticated/settings'
     | '/_authenticated/stocks'
     | '/_authenticated/today'
+    | '/_authenticated/trades'
     | '/kite/callback'
   fileRoutesById: FileRoutesById
 }
@@ -226,6 +262,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/kite/callback'
       preLoaderRoute: typeof KiteCallbackRouteImport
       parentRoute: typeof rootRouteImport
+    }
+    '/_authenticated/trades': {
+      id: '/_authenticated/trades'
+      path: '/trades'
+      fullPath: '/trades'
+      preLoaderRoute: typeof AuthenticatedTradesRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
     }
     '/_authenticated/today': {
       id: '/_authenticated/today'
@@ -276,11 +319,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedPlansRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
+    '/_authenticated/more': {
+      id: '/_authenticated/more'
+      path: '/more'
+      fullPath: '/more'
+      preLoaderRoute: typeof AuthenticatedMoreRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
     '/_authenticated/journal': {
       id: '/_authenticated/journal'
       path: '/journal'
       fullPath: '/journal'
       preLoaderRoute: typeof AuthenticatedJournalRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/home': {
+      id: '/_authenticated/home'
+      path: '/home'
+      fullPath: '/home'
+      preLoaderRoute: typeof AuthenticatedHomeRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
     '/_authenticated/charts': {
@@ -303,7 +360,9 @@ declare module '@tanstack/react-router' {
 interface AuthenticatedRouteRouteChildren {
   AuthenticatedAlertsRoute: typeof AuthenticatedAlertsRoute
   AuthenticatedChartsRoute: typeof AuthenticatedChartsRoute
+  AuthenticatedHomeRoute: typeof AuthenticatedHomeRoute
   AuthenticatedJournalRoute: typeof AuthenticatedJournalRoute
+  AuthenticatedMoreRoute: typeof AuthenticatedMoreRoute
   AuthenticatedPlansRoute: typeof AuthenticatedPlansRoute
   AuthenticatedPositionsRoute: typeof AuthenticatedPositionsRoute
   AuthenticatedScorecardRoute: typeof AuthenticatedScorecardRoute
@@ -311,12 +370,15 @@ interface AuthenticatedRouteRouteChildren {
   AuthenticatedSettingsRoute: typeof AuthenticatedSettingsRoute
   AuthenticatedStocksRoute: typeof AuthenticatedStocksRoute
   AuthenticatedTodayRoute: typeof AuthenticatedTodayRoute
+  AuthenticatedTradesRoute: typeof AuthenticatedTradesRoute
 }
 
 const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedAlertsRoute: AuthenticatedAlertsRoute,
   AuthenticatedChartsRoute: AuthenticatedChartsRoute,
+  AuthenticatedHomeRoute: AuthenticatedHomeRoute,
   AuthenticatedJournalRoute: AuthenticatedJournalRoute,
+  AuthenticatedMoreRoute: AuthenticatedMoreRoute,
   AuthenticatedPlansRoute: AuthenticatedPlansRoute,
   AuthenticatedPositionsRoute: AuthenticatedPositionsRoute,
   AuthenticatedScorecardRoute: AuthenticatedScorecardRoute,
@@ -324,6 +386,7 @@ const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedSettingsRoute: AuthenticatedSettingsRoute,
   AuthenticatedStocksRoute: AuthenticatedStocksRoute,
   AuthenticatedTodayRoute: AuthenticatedTodayRoute,
+  AuthenticatedTradesRoute: AuthenticatedTradesRoute,
 }
 
 const AuthenticatedRouteRouteWithChildren =

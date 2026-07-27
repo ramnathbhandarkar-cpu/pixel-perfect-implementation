@@ -1,13 +1,19 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
-import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { createFileRoute } from "@tanstack/react-router";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Search, X } from "lucide-react";
 import { PageHeader, PageBody, DisclaimerFooter } from "@/components/app-shell";
+import { TradingViewChart } from "@/components/tradingview-chart";
 import { supabase } from "@/integrations/supabase/client";
-import { callSwing, marketDataHint } from "@/lib/swing-api";
-import { importCandleCsv } from "@/lib/pipeline";
 import { distanceToLinePct } from "@/lib/discipline";
+import {
+  normaliseSymbol,
+  recentSymbols,
+  rememberSymbol,
+  searchSymbols,
+  type SymbolHit,
+} from "@/lib/symbols";
 import type { Candle, Overlay } from "@/components/candle-chart";
 
-// Chart uses browser-only lightweight-charts — lazy-load behind a client gate.
 const CandleChart = lazy(() =>
   import("@/components/candle-chart").then((m) => ({ default: m.CandleChart })),
 );
@@ -16,10 +22,7 @@ export const Route = createFileRoute("/_authenticated/charts")({
   head: () => ({
     meta: [
       { title: "Charts · Swing Trade" },
-      {
-        name: "description",
-        content: "Candlestick charts with MA/BB/RSI/MACD/VWAP indicators and level overlays.",
-      },
+      { name: "description", content: "Any NSE symbol, with your levels beside it." },
     ],
   }),
   ssr: false,
@@ -27,15 +30,12 @@ export const Route = createFileRoute("/_authenticated/charts")({
 });
 
 type Timeframe = "15m" | "1h" | "1d" | "1wk";
-const TFS: Timeframe[] = ["15m", "1h", "1d", "1wk"];
-
-interface StockRow {
-  id: string;
-  symbol: string;
-  name: string | null;
-  list_type: string;
-  entry_reference: number | null;
-}
+const TFS: { key: Timeframe; label: string; tv: string }[] = [
+  { key: "15m", label: "15m", tv: "15" },
+  { key: "1h", label: "1h", tv: "60" },
+  { key: "1d", label: "1d", tv: "D" },
+  { key: "1wk", label: "1wk", tv: "W" },
+];
 
 interface LevelRow {
   support: number | null;
@@ -47,7 +47,6 @@ interface LevelRow {
 }
 
 interface PlanRow {
-  id: string;
   invalidation_line: number;
   target_zone_low: number | null;
   target_zone_high: number | null;
@@ -55,199 +54,153 @@ interface PlanRow {
 
 const PREFS_KEY = "swing-chart-prefs";
 
-interface Prefs {
-  timeframe: Timeframe;
+interface ChartPrefs {
   symbol: string;
-  ma20: boolean;
-  ma50: boolean;
-  ma200: boolean;
-  ema9: boolean;
-  bb: boolean;
-  vwap: boolean;
-  rsi: boolean;
-  macd: boolean;
+  timeframe: Timeframe;
+  view: "tv" | "levels";
 }
 
-const DEFAULT_PREFS: Prefs = {
-  timeframe: "1d",
-  symbol: "",
-  ma20: true,
-  ma50: true,
-  ma200: true,
-  ema9: false,
-  bb: false,
-  vwap: false,
-  rsi: true,
-  macd: false,
-};
-
-function loadPrefs(): Prefs {
+function loadPrefs(): ChartPrefs {
+  const fallback: ChartPrefs = { symbol: "", timeframe: "1d", view: "tv" };
   try {
     const raw = localStorage.getItem(PREFS_KEY);
-    return raw ? { ...DEFAULT_PREFS, ...(JSON.parse(raw) as Partial<Prefs>) } : DEFAULT_PREFS;
+    if (!raw) return fallback;
+    const p = JSON.parse(raw) as Partial<ChartPrefs>;
+    return {
+      symbol: p.symbol ?? "",
+      timeframe: (p.timeframe as Timeframe) ?? "1d",
+      view: p.view === "levels" ? "levels" : "tv",
+    };
   } catch {
-    return DEFAULT_PREFS;
+    return fallback;
   }
 }
 
+const inr = (v: number | null | undefined) => (v == null ? "—" : `₹${Number(v).toFixed(2)}`);
+
 function ChartsScreen() {
-  const [prefs, setPrefs] = useState<Prefs>(() => loadPrefs());
-  const [stocks, setStocks] = useState<StockRow[]>([]);
-  const [candles, setCandles] = useState<Candle[]>([]);
+  const [prefs, setPrefs] = useState(loadPrefs);
+  const { symbol, timeframe, view } = prefs;
+
+  const [query, setQuery] = useState("");
+  const [hits, setHits] = useState<SymbolHit[]>([]);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [recents, setRecents] = useState<string[]>([]);
   const [level, setLevel] = useState<LevelRow | null>(null);
   const [plan, setPlan] = useState<PlanRow | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [busy, setBusy] = useState<string | null>(null);
-  const [msg, setMsg] = useState<string | null>(null);
-  const [err, setErr] = useState<string | null>(null);
+  const [lastClose, setLastClose] = useState<{ close: number; ts: string } | null>(null);
+  const [candles, setCandles] = useState<Candle[]>([]);
+  const [loadingLevels, setLoadingLevels] = useState(false);
+  const searchRef = useRef<HTMLInputElement>(null);
 
-  const { symbol, timeframe } = prefs;
-  const set = useCallback(
-    (patch: Partial<Prefs>) =>
-      setPrefs((p) => {
-        const next = { ...p, ...patch };
-        try {
-          localStorage.setItem(PREFS_KEY, JSON.stringify(next));
-        } catch {
-          // preference persistence is best-effort
-        }
-        return next;
-      }),
-    [],
-  );
+  const set = useCallback((patch: Partial<ChartPrefs>) => {
+    setPrefs((p) => {
+      const next = { ...p, ...patch };
+      try {
+        localStorage.setItem(PREFS_KEY, JSON.stringify(next));
+      } catch {
+        // preferences are a convenience
+      }
+      return next;
+    });
+  }, []);
 
-  // Load the symbol universe once.
   useEffect(() => {
-    (async () => {
-      const { data, error } = await supabase
-        .from("stocks")
-        .select("id, symbol, name, list_type, entry_reference")
-        .neq("list_type", "archived")
-        .order("symbol", { ascending: true });
-      if (error) {
-        setErr(error.message);
-        return;
-      }
-      const rows = (data ?? []) as StockRow[];
-      setStocks(rows);
-      // Keep the remembered symbol when it still exists.
-      if (rows.length && !rows.some((r) => r.symbol === prefs.symbol)) {
-        set({ symbol: rows[0].symbol });
-      }
-    })();
+    setRecents(recentSymbols());
+    if (!prefs.symbol) {
+      const r = recentSymbols();
+      set({ symbol: r[0] ?? "RELIANCE" });
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const loadCandles = useCallback(async () => {
+  // Type-ahead, debounced so every keystroke doesn't hit the database.
+  useEffect(() => {
+    if (!query.trim()) {
+      setHits([]);
+      return;
+    }
+    const t = setTimeout(() => {
+      void searchSymbols(query).then(setHits);
+    }, 160);
+    return () => clearTimeout(t);
+  }, [query]);
+
+  const pick = useCallback(
+    (raw: string) => {
+      const s = normaliseSymbol(raw);
+      if (!s) return;
+      rememberSymbol(s);
+      setRecents(recentSymbols());
+      set({ symbol: s });
+      setQuery("");
+      setHits([]);
+      setSearchOpen(false);
+    },
+    [set],
+  );
+
+  // Our computed context for whatever symbol is on screen.
+  useEffect(() => {
     if (!symbol) return;
-    setLoading(true);
-    setErr(null);
-    const [cRes, lRes, pRes] = await Promise.all([
-      supabase
-        .from("candles")
-        .select("ts, open, high, low, close, volume")
-        .eq("symbol", symbol)
-        .eq("timeframe", timeframe)
-        .order("ts", { ascending: true })
-        .limit(2000),
-      supabase
-        .from("levels")
-        .select("support, resistance, support_tests, resistance_tests, trend_context, as_of")
-        .eq("symbol", symbol)
-        .order("as_of", { ascending: false })
-        .limit(1),
-      supabase
-        .from("watch_plans")
-        .select("id, invalidation_line, target_zone_low, target_zone_high")
-        .eq("symbol", symbol)
-        .eq("status", "active")
-        .order("created_at", { ascending: false })
-        .limit(1),
-    ]);
-    if (cRes.error) setErr(cRes.error.message);
-    setCandles(
-      (cRes.data ?? []).map((r) => ({
+    let alive = true;
+    setLoadingLevels(true);
+    (async () => {
+      const [lRes, pRes, cRes] = await Promise.all([
+        supabase
+          .from("levels")
+          .select("support, resistance, support_tests, resistance_tests, trend_context, as_of")
+          .eq("symbol", symbol)
+          .order("as_of", { ascending: false })
+          .limit(1),
+        supabase
+          .from("watch_plans")
+          .select("invalidation_line, target_zone_low, target_zone_high")
+          .eq("symbol", symbol)
+          .eq("status", "active")
+          .order("created_at", { ascending: false })
+          .limit(1),
+        supabase
+          .from("candles")
+          .select("ts, open, high, low, close, volume")
+          .eq("symbol", symbol)
+          .eq("timeframe", timeframe)
+          .order("ts", { ascending: true })
+          .limit(2000),
+      ]);
+      if (!alive) return;
+      setLevel((lRes.data?.[0] as LevelRow) ?? null);
+      setPlan((pRes.data?.[0] as PlanRow) ?? null);
+      const rows = (cRes.data ?? []).map((r) => ({
         time: Math.floor(new Date(r.ts as string).getTime() / 1000),
         open: Number(r.open),
         high: Number(r.high),
         low: Number(r.low),
         close: Number(r.close),
         volume: r.volume == null ? null : Number(r.volume),
-      })),
-    );
-    setLevel((lRes.data?.[0] as LevelRow) ?? null);
-    setPlan((pRes.data?.[0] as PlanRow) ?? null);
-    setLoading(false);
-  }, [symbol, timeframe]);
-
-  useEffect(() => {
-    void loadCandles();
-  }, [loadCandles]);
-
-  const currentStock = useMemo(
-    () => stocks.find((s) => s.symbol === symbol) ?? null,
-    [stocks, symbol],
-  );
-
-  async function handleRefresh() {
-    if (!symbol) return;
-    setBusy("refresh");
-    setErr(null);
-    setMsg(null);
-    try {
-      const r = await callSwing<{ inserted: number }>("ingest_candles", {
-        symbol,
-        timeframe,
-      });
-      setMsg(`Fetched ${r.inserted} candles from Kite.`);
-      await loadCandles();
-    } catch (e) {
-      setErr(marketDataHint(e));
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  async function handleSyncInstruments() {
-    setBusy("sync");
-    setErr(null);
-    setMsg(null);
-    try {
-      const r = await callSwing<{ count: number }>("sync_instruments");
-      setMsg(`Synced ${r.count} NSE instruments.`);
-    } catch (e) {
-      setErr(marketDataHint(e));
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  // CSV import runs entirely in the browser — no Kite token, no server needed.
-  async function handleCsv(file: File) {
-    if (!symbol) return;
-    setBusy("csv");
-    setErr(null);
-    setMsg(null);
-    try {
-      const text = await file.text();
-      const r = await importCandleCsv(text, symbol, timeframe);
-      setMsg(
-        `Imported ${r.inserted} candles${r.skipped ? ` · ${r.skipped} malformed rows skipped` : ""}.`,
+      }));
+      setCandles(rows);
+      setLastClose(
+        rows.length
+          ? {
+              close: rows[rows.length - 1].close,
+              ts: new Date(rows[rows.length - 1].time * 1000).toISOString(),
+            }
+          : null,
       );
-      await loadCandles();
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(null);
-    }
-  }
+      setLoadingLevels(false);
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [symbol, timeframe]);
 
   const overlays: Overlay[] = useMemo(() => {
     const list: Overlay[] = [];
     if (level?.support != null) {
       list.push({
         price: Number(level.support),
-        label: `S ${level.support_tests ?? 0}×`,
+        label: `Support ${level.support_tests ?? 0}×`,
         color: "#1baf7a",
         style: "dashed",
       });
@@ -255,7 +208,7 @@ function ChartsScreen() {
     if (level?.resistance != null) {
       list.push({
         price: Number(level.resistance),
-        label: `R ${level.resistance_tests ?? 0}×`,
+        label: `Resistance ${level.resistance_tests ?? 0}×`,
         color: "#e34948",
         style: "dashed",
       });
@@ -263,199 +216,171 @@ function ChartsScreen() {
     if (plan?.invalidation_line != null) {
       list.push({
         price: Number(plan.invalidation_line),
-        label: "invalidation",
+        label: "your exit level",
         color: "#eda100",
         style: "solid",
       });
     }
-    const target = plan?.target_zone_low ?? plan?.target_zone_high;
-    if (target != null) {
-      list.push({
-        price: Number(target),
-        label: "target",
-        color: "#8b5cf6",
-        style: "dotted",
-      });
-    }
-    if (currentStock?.entry_reference != null) {
-      list.push({
-        price: Number(currentStock.entry_reference),
-        label: "entry ref",
-        color: "#2a78d6",
-        style: "dotted",
-      });
-    }
     return list;
-  }, [level, plan, currentStock]);
+  }, [level, plan]);
 
-  const last = candles.length ? candles[candles.length - 1] : null;
-  const prev = candles.length > 1 ? candles[candles.length - 2] : null;
-  const change = last && prev ? last.close - prev.close : 0;
-  const changePct = last && prev && prev.close ? (change / prev.close) * 100 : 0;
-
+  const priceNow = lastClose?.close ?? null;
   const toLine =
-    last && plan?.invalidation_line != null
-      ? distanceToLinePct(last.close, Number(plan.invalidation_line))
+    priceNow != null && plan?.invalidation_line != null
+      ? distanceToLinePct(priceNow, Number(plan.invalidation_line))
       : null;
-
-  const INDICATORS: { key: keyof Prefs; label: string; color: string }[] = [
-    { key: "ma20", label: "MA20", color: "#eda100" },
-    { key: "ma50", label: "MA50", color: "#2a78d6" },
-    { key: "ma200", label: "MA200", color: "#8b5cf6" },
-    { key: "ema9", label: "EMA9", color: "#e8e8ec" },
-    { key: "bb", label: "BB(20,2)", color: "#9898a6" },
-    { key: "vwap", label: "VWAP", color: "#e34948" },
-    { key: "rsi", label: "RSI(14)", color: "#8b5cf6" },
-    { key: "macd", label: "MACD", color: "#2a78d6" },
-  ];
+  const tvInterval = TFS.find((t) => t.key === timeframe)?.tv ?? "D";
 
   return (
     <>
       <PageHeader
-        title="Charts"
-        subtitle="Candlesticks · indicators · level overlays"
+        title={symbol || "Charts"}
+        subtitle="Any NSE stock — just search for it"
         actions={
-          last ? (
-            <div className="font-mono text-sm flex gap-3 items-baseline">
-              <span className="text-foreground">₹{last.close.toFixed(2)}</span>
-              <span className={change >= 0 ? "text-bullish" : "text-bearish"}>
-                {change >= 0 ? "+" : ""}
-                {change.toFixed(2)} ({changePct.toFixed(2)}%)
-              </span>
-            </div>
-          ) : undefined
+          <button
+            onClick={() => {
+              setSearchOpen(true);
+              setTimeout(() => searchRef.current?.focus(), 30);
+            }}
+            className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded border border-border text-muted-fg hover:text-foreground"
+          >
+            <Search size={13} /> Search
+          </button>
         }
       />
       <PageBody>
         <div className="space-y-3">
-          {/* Symbol + timeframe + data actions */}
-          <div className="surface p-3 flex flex-wrap items-center gap-2.5">
-            <select
-              value={symbol}
-              onChange={(e) => set({ symbol: e.target.value })}
-              className="bg-surface-raised border border-border rounded-md px-3 py-1.5 text-sm font-mono"
-            >
-              {stocks.length === 0 && <option value="">No stocks — add some first</option>}
-              {stocks.map((s) => (
-                <option key={s.id} value={s.symbol}>
-                  {s.symbol} {s.name ? `· ${s.name}` : ""}
-                </option>
-              ))}
-            </select>
+          {/* Search — the only way in, no watchlist gating */}
+          {searchOpen && (
+            <div className="surface p-3">
+              <div className="flex items-center gap-2">
+                <Search size={14} className="text-faint shrink-0" />
+                <input
+                  ref={searchRef}
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") pick(hits[0]?.symbol ?? query);
+                    if (e.key === "Escape") setSearchOpen(false);
+                  }}
+                  placeholder="Type any NSE symbol — RELIANCE, ITC, MAZDOCK…"
+                  className="flex-1 bg-transparent text-sm outline-none font-mono"
+                />
+                <button
+                  onClick={() => setSearchOpen(false)}
+                  aria-label="Close search"
+                  className="text-muted-fg hover:text-foreground p-1"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+              {hits.length > 0 && (
+                <ul className="mt-2 border-t border-border pt-2 space-y-0.5 max-h-72 overflow-y-auto">
+                  {hits.map((h) => (
+                    <li key={h.symbol}>
+                      <button
+                        onClick={() => pick(h.symbol)}
+                        className="w-full text-left px-2 py-2 rounded hover:bg-surface-raised flex items-baseline gap-2"
+                      >
+                        <span className="font-mono text-sm text-foreground">{h.symbol}</span>
+                        {h.name && <span className="text-xs text-muted-fg truncate">{h.name}</span>}
+                        {h.source === "recent" && (
+                          <span className="ml-auto text-[10px] text-faint uppercase">recent</span>
+                        )}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
 
+          {/* Recents — one tap back to something you were just looking at */}
+          {!searchOpen && recents.length > 0 && (
+            <div className="flex flex-wrap gap-1.5">
+              {recents.map((r) => (
+                <button
+                  key={r}
+                  onClick={() => pick(r)}
+                  className={
+                    "text-xs font-mono px-2.5 py-1 rounded border transition-colors " +
+                    (r === symbol
+                      ? "border-accent-info bg-accent-info/15 text-foreground"
+                      : "border-border text-muted-fg hover:text-foreground")
+                  }
+                >
+                  {r}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* Timeframe + view switch */}
+          <div className="flex flex-wrap items-center gap-2">
             <div className="flex gap-1">
               {TFS.map((t) => (
                 <button
-                  key={t}
-                  onClick={() => set({ timeframe: t })}
+                  key={t.key}
+                  onClick={() => set({ timeframe: t.key })}
                   className={
-                    "text-xs px-2.5 py-1 rounded border transition-colors " +
-                    (timeframe === t
+                    "text-xs px-2.5 py-1.5 rounded border transition-colors " +
+                    (timeframe === t.key
                       ? "bg-accent-info/15 border-accent-info text-foreground"
                       : "border-border text-muted-fg hover:text-foreground")
                   }
                 >
-                  {t}
+                  {t.label}
                 </button>
               ))}
             </div>
-
-            <button
-              onClick={handleRefresh}
-              disabled={busy !== null || !symbol}
-              className="btn-primary hover:btn-primary-hover text-xs disabled:opacity-60"
-            >
-              {busy === "refresh" ? "Fetching…" : "Refresh from Kite"}
-            </button>
-
-            <label className="text-xs px-2.5 py-1 rounded border border-border text-muted-fg hover:text-foreground cursor-pointer">
-              {busy === "csv" ? "Importing…" : "Upload CSV"}
-              <input
-                type="file"
-                accept=".csv,text/csv"
-                className="hidden"
-                onChange={(e) => {
-                  const f = e.target.files?.[0];
-                  if (f) void handleCsv(f);
-                  e.target.value = "";
-                }}
-                disabled={busy !== null}
-              />
-            </label>
-
-            <button
-              onClick={handleSyncInstruments}
-              disabled={busy !== null}
-              className="text-xs px-2.5 py-1 rounded border border-border text-muted-fg hover:text-foreground disabled:opacity-60"
-              title="Fetches the NSE instrument list from Kite — run once, or when a symbol isn't found"
-            >
-              {busy === "sync" ? "Syncing…" : "Sync instruments"}
-            </button>
-
-            <span className="ml-auto text-[11px] text-faint font-mono">{candles.length} bars</span>
+            <div className="ml-auto flex gap-1">
+              <button
+                onClick={() => set({ view: "tv" })}
+                className={
+                  "text-xs px-2.5 py-1.5 rounded border transition-colors " +
+                  (view === "tv"
+                    ? "bg-accent-info/15 border-accent-info text-foreground"
+                    : "border-border text-muted-fg hover:text-foreground")
+                }
+              >
+                Chart
+              </button>
+              <button
+                onClick={() => set({ view: "levels" })}
+                title="Our chart, with your computed support and resistance drawn on it"
+                className={
+                  "text-xs px-2.5 py-1.5 rounded border transition-colors " +
+                  (view === "levels"
+                    ? "bg-accent-info/15 border-accent-info text-foreground"
+                    : "border-border text-muted-fg hover:text-foreground")
+                }
+              >
+                Levels view
+              </button>
+            </div>
           </div>
 
-          {/* Indicator toggles */}
-          <div className="surface p-2.5 flex flex-wrap items-center gap-1.5 text-xs">
-            <span className="text-faint uppercase tracking-widest text-[10px] mr-1">
-              Indicators
-            </span>
-            {INDICATORS.map(({ key, label, color }) => {
-              const on = Boolean(prefs[key]);
-              return (
-                <button
-                  key={key}
-                  onClick={() => set({ [key]: !on } as Partial<Prefs>)}
-                  aria-pressed={on}
-                  className={
-                    "px-2 py-1 rounded border transition-colors " +
-                    (on
-                      ? "border-border-strong text-foreground bg-surface-raised"
-                      : "border-border text-faint hover:text-muted-fg")
-                  }
-                >
-                  <span
-                    className="inline-block w-2 h-2 rounded-full mr-1.5 align-middle"
-                    style={{ background: color, opacity: on ? 1 : 0.3 }}
-                  />
-                  {label}
-                </button>
-              );
-            })}
-          </div>
-
-          {msg && <div className="text-xs text-bullish px-1">{msg}</div>}
-          {err && <div className="text-xs text-bearish px-1 whitespace-pre-wrap">{err}</div>}
-
-          {/* Chart */}
+          {/* The chart */}
           <div className="surface overflow-hidden">
             {!symbol ? (
               <div className="p-12 text-center text-sm text-muted-fg">
-                Add a symbol on the{" "}
-                <Link to="/stocks" className="text-accent-info hover:underline">
-                  Stocks screen
-                </Link>{" "}
-                to begin.
+                Search for a stock to see its chart.
               </div>
-            ) : loading && candles.length === 0 ? (
-              <div className="p-12 text-center text-sm text-muted-fg animate-pulse">
-                Loading {symbol}…
-              </div>
+            ) : view === "tv" ? (
+              <TradingViewChart symbol={symbol} interval={tvInterval} height={560} />
             ) : candles.length === 0 ? (
               <div className="p-12 text-center space-y-2">
                 <p className="text-sm text-foreground">
-                  No {timeframe} candles stored for {symbol} yet.
+                  No stored candles for {symbol} at {timeframe} yet.
                 </p>
                 <p className="text-xs text-muted-fg">
-                  Press “Refresh from Kite” (needs today's token in Settings), or upload a CSV — CSV
-                  import works without Kite.
+                  This view draws your computed support and resistance on our own chart, so it needs
+                  the nightly data. Switch back to Chart for the live TradingView view.
                 </p>
               </div>
             ) : (
               <Suspense
-                fallback={
-                  <div className="p-12 text-center text-sm text-muted-fg">Loading chart…</div>
-                }
+                fallback={<div className="p-12 text-center text-sm text-muted-fg">Loading…</div>}
               >
                 <CandleChart
                   candles={candles}
@@ -463,68 +388,80 @@ function ChartsScreen() {
                   symbol={symbol}
                   timeframe={timeframe}
                   fitKey={`${symbol}:${timeframe}`}
-                  showMA={{
-                    ma20: prefs.ma20,
-                    ma50: prefs.ma50,
-                    ma200: prefs.ma200,
-                    ema9: prefs.ema9,
-                  }}
-                  showBB={prefs.bb}
-                  showVWAP={prefs.vwap}
-                  showRSI={prefs.rsi}
-                  showMACD={prefs.macd}
+                  showMA={{ ma20: true, ma50: true, ma200: true, ema9: false }}
+                  showRSI
                   height={520}
                 />
               </Suspense>
             )}
           </div>
 
-          {/* Descriptive context strip — measurements, never advice */}
-          {(level || plan) && (
-            <div className="surface p-3 flex flex-wrap gap-x-5 gap-y-1.5 text-xs font-mono">
-              {level?.trend_context && (
-                <span>
-                  <span className="text-faint uppercase tracking-widest mr-1.5">Trend</span>
-                  <span
-                    className={
-                      level.trend_context === "DOWNTREND" ? "text-warning" : "text-foreground"
-                    }
-                  >
-                    {level.trend_context}
-                  </span>
-                </span>
-              )}
-              {level?.support != null && (
-                <span>
-                  <span className="text-faint uppercase tracking-widest mr-1.5">S</span>
-                  <span className="text-bullish">₹{Number(level.support).toFixed(2)}</span>
-                  <span className="text-muted-fg"> · {level.support_tests ?? 0}× tested</span>
-                </span>
-              )}
-              {level?.resistance != null && (
-                <span>
-                  <span className="text-faint uppercase tracking-widest mr-1.5">R</span>
-                  <span className="text-bearish">₹{Number(level.resistance).toFixed(2)}</span>
-                  <span className="text-muted-fg"> · {level.resistance_tests ?? 0}× tested</span>
-                </span>
-              )}
-              {toLine != null && (
-                <span>
-                  <span className="text-faint uppercase tracking-widest mr-1.5">Line</span>
-                  <span className={toLine <= 0 ? "text-warning" : "text-foreground"}>
-                    {Math.abs(toLine).toFixed(1)}% {toLine <= 0 ? "beyond" : "above"}
-                  </span>
-                </span>
-              )}
-              {level?.as_of && <span className="text-faint">levels as of {level.as_of}</span>}
+          {/* Your levels — the numbers that matter, always visible */}
+          <div className="surface p-4">
+            <div className="text-[11px] text-faint uppercase tracking-widest">
+              Your levels for {symbol}
             </div>
-          )}
-
-          <div className="text-[11px] text-faint">
-            CSV format: <code className="text-muted-fg">timestamp,open,high,low,close,volume</code>{" "}
-            · timestamps as ISO 8601 (e.g.{" "}
-            <code className="text-muted-fg">2026-07-24T09:15:00+05:30</code>). Malformed rows are
-            skipped and counted, never imported as zeros.
+            {loadingLevels ? (
+              <p className="text-sm text-muted-fg mt-2">Loading…</p>
+            ) : level == null && plan == null ? (
+              <p className="text-sm text-muted-fg mt-2 leading-relaxed">
+                Nothing computed for {symbol} yet. Levels are worked out overnight for the stocks in
+                your screener list — add {symbol} there if you want it measured.
+              </p>
+            ) : (
+              <div className="mt-2 flex flex-wrap gap-x-6 gap-y-2 text-sm font-mono">
+                {level?.support != null && (
+                  <span>
+                    <span className="text-faint">Support </span>
+                    <span className="text-bullish">{inr(level.support)}</span>
+                    <span className="text-muted-fg"> · {level.support_tests ?? 0}× tested</span>
+                  </span>
+                )}
+                {level?.resistance != null && (
+                  <span>
+                    <span className="text-faint">Resistance </span>
+                    <span className="text-bearish">{inr(level.resistance)}</span>
+                    <span className="text-muted-fg"> · {level.resistance_tests ?? 0}× tested</span>
+                  </span>
+                )}
+                {plan?.invalidation_line != null && (
+                  <span>
+                    <span className="text-faint">You said exit at </span>
+                    <span className="text-warning">{inr(plan.invalidation_line)}</span>
+                    {toLine != null && (
+                      <span className={toLine <= 0 ? "text-warning" : "text-muted-fg"}>
+                        {" "}
+                        · {Math.abs(toLine).toFixed(1)}% {toLine <= 0 ? "past it" : "above it"}
+                      </span>
+                    )}
+                  </span>
+                )}
+                {level?.trend_context && (
+                  <span>
+                    <span className="text-faint">Trend </span>
+                    <span
+                      className={
+                        level.trend_context === "DOWNTREND" ? "text-warning" : "text-foreground"
+                      }
+                    >
+                      {level.trend_context}
+                    </span>
+                  </span>
+                )}
+                {lastClose && (
+                  <span className="text-faint">
+                    close {inr(lastClose.close)} on {lastClose.ts.slice(0, 10)}
+                  </span>
+                )}
+              </div>
+            )}
+            {view === "tv" && overlays.length > 0 && (
+              <p className="text-[11px] text-faint mt-3">
+                TradingView can't draw these for us. Draw them once with the horizontal-line tool
+                and it will remember them for this symbol — or tap Levels view to see them drawn
+                automatically.
+              </p>
+            )}
           </div>
         </div>
       </PageBody>

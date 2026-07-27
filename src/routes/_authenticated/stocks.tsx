@@ -66,10 +66,7 @@ function StocksScreen() {
     refresh();
   }, []);
 
-  const visible = useMemo(
-    () => stocks.filter((s) => s.list_type === tab),
-    [stocks, tab],
-  );
+  const visible = useMemo(() => stocks.filter((s) => s.list_type === tab), [stocks, tab]);
 
   async function addBulk() {
     setBusy(true);
@@ -126,10 +123,7 @@ function StocksScreen() {
 
   return (
     <>
-      <PageHeader
-        title="Stocks"
-        subtitle="Manage your symbol universe · NSE"
-      />
+      <PageHeader title="Stocks" subtitle="Manage your symbol universe · NSE" />
       <PageBody>
         <div className="flex gap-1 mb-4 border-b border-border">
           {TABS.map((t) => (
@@ -155,7 +149,8 @@ function StocksScreen() {
           <section className="surface p-4 mb-4">
             <h2 className="text-sm font-semibold">Add symbols to {tab}</h2>
             <p className="text-xs text-muted-fg mt-1">
-              Paste symbols separated by commas, spaces, or newlines. E.g. <code>RELIANCE, TCS, INFY</code>
+              Paste symbols separated by commas, spaces, or newlines. E.g.{" "}
+              <code>RELIANCE, TCS, INFY</code>
             </p>
             <textarea
               value={bulk}
@@ -212,7 +207,10 @@ function StocksScreen() {
               </thead>
               <tbody>
                 {visible.map((s) => (
-                  <tr key={s.id} className="border-b border-border last:border-0 hover:bg-surface-raised">
+                  <tr
+                    key={s.id}
+                    className="border-b border-border last:border-0 hover:bg-surface-raised"
+                  >
                     <td className="px-3 py-2 font-mono font-medium">{s.symbol}</td>
                     <td className="px-3 py-2">
                       <EditableCell
@@ -232,9 +230,7 @@ function StocksScreen() {
                       <td className="px-3 py-2 font-mono">
                         <EditableCell
                           value={s.advisory_quarter ?? ""}
-                          onCommit={(v) =>
-                            updateField(s.id, { advisory_quarter: v || null })
-                          }
+                          onCommit={(v) => updateField(s.id, { advisory_quarter: v || null })}
                           placeholder="—"
                         />
                       </td>

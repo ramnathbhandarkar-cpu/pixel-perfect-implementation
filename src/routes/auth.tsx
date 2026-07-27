@@ -22,7 +22,7 @@ function AuthScreen() {
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
-      if (data.session) navigate({ to: "/today", replace: true });
+      if (data.session) navigate({ to: "/home", replace: true });
     });
   }, [navigate]);
 
@@ -36,7 +36,7 @@ function AuthScreen() {
       setErr(error.message);
       return;
     }
-    navigate({ to: "/today", replace: true });
+    navigate({ to: "/home", replace: true });
   }
 
   return (

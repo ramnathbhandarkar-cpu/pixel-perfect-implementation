@@ -1,65 +1,84 @@
 import { Link, useRouterState, useNavigate } from "@tanstack/react-router";
-import { useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { flushOutbox, outboxCount } from "@/lib/offline";
 import {
-  Activity,
+  Home,
   LineChart,
   ScanSearch,
   ClipboardList,
-  Wallet,
-  Trophy,
   BookOpen,
   Bell,
   Settings,
   ListChecks,
   LogOut,
   MoreHorizontal,
-  X,
 } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 
-type NavItem = {
+type IconType = React.ComponentType<{ size?: number; className?: string }>;
+
+export interface NavItem {
   to: string;
   label: string;
-  short: string;
-  icon: React.ComponentType<{ size?: number; className?: string }>;
-  mobile?: boolean;
-};
+  icon: IconType;
+  /** One line of plain language explaining what the section is for. */
+  blurb?: string;
+}
 
-const NAV: NavItem[] = [
-  { to: "/today", label: "Today", short: "Today", icon: Activity, mobile: true },
-  { to: "/charts", label: "Charts", short: "Charts", icon: LineChart, mobile: true },
-  { to: "/screener", label: "Screener", short: "Screen", icon: ScanSearch },
-  { to: "/plans", label: "Plans", short: "Plans", icon: ClipboardList, mobile: true },
-  { to: "/positions", label: "Positions", short: "Positions", icon: Wallet, mobile: true },
-  { to: "/scorecard", label: "Scorecard", short: "Score", icon: Trophy },
-  { to: "/journal", label: "Journal", short: "Journal", icon: BookOpen },
-  { to: "/alerts", label: "Alerts", short: "Alerts", icon: Bell },
-  { to: "/stocks", label: "Stocks", short: "Stocks", icon: ListChecks },
-  { to: "/settings", label: "Settings", short: "Settings", icon: Settings },
+// Four tabs. That is the whole navigation.
+//
+// This used to be ten sections, which meant deciding where to go before
+// deciding what to do. Today / Plans / Positions / Scorecard all folded into
+// Home and Trades; everything that is configuration rather than a daily
+// action moved behind More.
+const PRIMARY: NavItem[] = [
+  { to: "/home", label: "Home", icon: Home },
+  { to: "/charts", label: "Charts", icon: LineChart },
+  { to: "/trades", label: "Trades", icon: ClipboardList },
+  { to: "/more", label: "More", icon: MoreHorizontal },
 ];
 
-// Sections that don't fit in the mobile tab bar and live behind "More".
-const SECONDARY = NAV.filter((n) => !n.mobile);
+// Everything behind More. Nothing here duplicates a tab above.
+export const MORE_SECTIONS: NavItem[] = [
+  {
+    to: "/screener",
+    label: "Screener",
+    icon: ScanSearch,
+    blurb: "The overnight measurements, with the numbers behind each one.",
+  },
+  {
+    to: "/stocks",
+    label: "Screener universe",
+    icon: ListChecks,
+    blurb: "Which stocks get measured overnight.",
+  },
+  {
+    to: "/journal",
+    label: "Journal",
+    icon: BookOpen,
+    blurb: "What you were thinking, in your own words.",
+  },
+  {
+    to: "/alerts",
+    label: "Alerts",
+    icon: Bell,
+    blurb: "Your inbox and the rules that fill it.",
+  },
+  {
+    to: "/settings",
+    label: "Settings",
+    icon: Settings,
+    blurb: "Data source, notifications, exports, and whether prices are fresh.",
+  },
+];
+
+function isActive(path: string, to: string): boolean {
+  return path === to || path.startsWith(to + "/");
+}
 
 export function AppShell({ children }: { children: ReactNode }) {
   const path = useRouterState({ select: (s) => s.location.pathname });
   const navigate = useNavigate();
-  const [moreOpen, setMoreOpen] = useState(false);
-
-  // Close the sheet on navigation and on Escape.
-  useEffect(() => {
-    setMoreOpen(false);
-  }, [path]);
-
-  useEffect(() => {
-    if (!moreOpen) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setMoreOpen(false);
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [moreOpen]);
 
   async function signOut() {
     await supabase.auth.signOut();
@@ -68,32 +87,23 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   return (
     <div className="min-h-screen flex bg-background">
-      {/* Desktop sidebar */}
+      {/* Desktop sidebar — same four, plus the More sections spelled out so a
+          big screen doesn't force an extra click. */}
       <aside className="hidden md:flex flex-col w-56 shrink-0 border-r border-border bg-surface">
         <div className="px-4 py-4 border-b border-border">
           <div className="text-xs text-faint tracking-widest uppercase">Swing Trade</div>
           <div className="text-sm text-muted-fg mt-0.5">NSE · IST</div>
         </div>
         <nav className="flex-1 overflow-y-auto py-2">
-          {NAV.map((n) => {
-            const active = path === n.to || path.startsWith(n.to + "/");
-            const Icon = n.icon;
-            return (
-              <Link
-                key={n.to}
-                to={n.to}
-                className={
-                  "flex items-center gap-2.5 px-4 py-2 text-[13px] transition-colors " +
-                  (active
-                    ? "text-foreground bg-surface-raised border-l-2 border-accent-info"
-                    : "text-muted-fg hover:text-foreground hover:bg-surface-raised border-l-2 border-transparent")
-                }
-              >
-                <Icon size={15} />
-                <span>{n.label}</span>
-              </Link>
-            );
-          })}
+          {PRIMARY.filter((n) => n.to !== "/more").map((n) => (
+            <SidebarLink key={n.to} item={n} active={isActive(path, n.to)} />
+          ))}
+          <div className="px-4 pt-4 pb-1 text-[10px] text-faint uppercase tracking-widest">
+            More
+          </div>
+          {MORE_SECTIONS.map((n) => (
+            <SidebarLink key={n.to} item={n} active={isActive(path, n.to)} />
+          ))}
         </nav>
         <OfflineStatus />
         <button
@@ -108,89 +118,47 @@ export function AppShell({ children }: { children: ReactNode }) {
       <main className="flex-1 min-w-0 flex flex-col pb-16 md:pb-0">{children}</main>
 
       {/* Mobile bottom tab bar */}
-      <nav className="md:hidden fixed bottom-0 left-0 right-0 h-14 border-t border-border bg-surface flex items-stretch z-40">
-        {NAV.filter((n) => n.mobile).map((n) => {
-          const active = path === n.to || path.startsWith(n.to + "/");
+      <nav className="md:hidden fixed bottom-0 left-0 right-0 border-t border-border bg-surface flex items-stretch z-40 pb-[env(safe-area-inset-bottom)]">
+        {PRIMARY.map((n) => {
+          const active =
+            n.to === "/more"
+              ? isActive(path, "/more") || MORE_SECTIONS.some((m) => isActive(path, m.to))
+              : isActive(path, n.to);
           const Icon = n.icon;
           return (
             <Link
               key={n.to}
               to={n.to}
               className={
-                "flex-1 flex flex-col items-center justify-center gap-0.5 text-[10px] " +
+                "flex-1 h-14 flex flex-col items-center justify-center gap-0.5 text-[10px] " +
                 (active ? "text-foreground" : "text-muted-fg")
               }
             >
               <Icon size={18} />
-              <span>{n.short}</span>
+              <span>{n.label}</span>
             </Link>
           );
         })}
-        <button
-          onClick={() => setMoreOpen(true)}
-          aria-label="More sections"
-          aria-expanded={moreOpen}
-          className={
-            "flex-1 flex flex-col items-center justify-center gap-0.5 text-[10px] " +
-            (SECONDARY.some((n) => n.to === path) || moreOpen ? "text-foreground" : "text-muted-fg")
-          }
-        >
-          <MoreHorizontal size={18} />
-          <span>More</span>
-        </button>
       </nav>
-
-      {/* Mobile "More" sheet — every section the tab bar can't fit. Without
-          this, Screener/Scorecard/Journal/Alerts/Stocks were unreachable on
-          a phone. */}
-      {moreOpen && (
-        <div className="md:hidden fixed inset-0 z-50 flex flex-col justify-end">
-          <button
-            aria-label="Close menu"
-            onClick={() => setMoreOpen(false)}
-            className="absolute inset-0 bg-black/60"
-          />
-          <div className="relative bg-surface border-t border-border-strong rounded-t-xl pb-[max(env(safe-area-inset-bottom),0.5rem)]">
-            <div className="flex items-center justify-between px-4 py-3 border-b border-border">
-              <span className="text-xs text-faint uppercase tracking-widest">All sections</span>
-              <button
-                onClick={() => setMoreOpen(false)}
-                aria-label="Close"
-                className="text-muted-fg hover:text-foreground p-1"
-              >
-                <X size={16} />
-              </button>
-            </div>
-            <nav className="grid grid-cols-2 gap-px bg-border">
-              {NAV.map((n) => {
-                const Icon = n.icon;
-                const active = path === n.to;
-                return (
-                  <Link
-                    key={n.to}
-                    to={n.to}
-                    onClick={() => setMoreOpen(false)}
-                    className={
-                      "flex items-center gap-2.5 px-4 py-3.5 text-sm bg-surface " +
-                      (active ? "text-foreground" : "text-muted-fg")
-                    }
-                  >
-                    <Icon size={16} />
-                    <span>{n.label}</span>
-                  </Link>
-                );
-              })}
-            </nav>
-            <button
-              onClick={signOut}
-              className="w-full flex items-center gap-2 px-4 py-3.5 text-sm text-muted-fg border-t border-border"
-            >
-              <LogOut size={15} /> Sign out
-            </button>
-          </div>
-        </div>
-      )}
     </div>
+  );
+}
+
+function SidebarLink({ item, active }: { item: NavItem; active: boolean }) {
+  const Icon = item.icon;
+  return (
+    <Link
+      to={item.to}
+      className={
+        "flex items-center gap-2.5 px-4 py-2 text-[13px] transition-colors " +
+        (active
+          ? "text-foreground bg-surface-raised border-l-2 border-accent-info"
+          : "text-muted-fg hover:text-foreground hover:bg-surface-raised border-l-2 border-transparent")
+      }
+    >
+      <Icon size={15} />
+      <span>{item.label}</span>
+    </Link>
   );
 }
 
@@ -232,6 +200,42 @@ function OfflineStatus() {
   );
 }
 
+// The alerts inbox lost its tab, so it lives here — visible from every
+// screen, silent until there is something unread.
+function AlertBell() {
+  const path = useRouterState({ select: (s) => s.location.pathname });
+  const [unread, setUnread] = useState(0);
+
+  const refresh = useCallback(async () => {
+    const { count, error } = await supabase
+      .from("alerts")
+      .select("id", { count: "exact", head: true })
+      .is("read_at", null);
+    if (!error) setUnread(count ?? 0);
+  }, []);
+
+  useEffect(() => {
+    void refresh();
+    const t = setInterval(refresh, 60_000);
+    return () => clearInterval(t);
+  }, [refresh, path]);
+
+  return (
+    <Link
+      to="/alerts"
+      aria-label={unread > 0 ? `Alerts, ${unread} unread` : "Alerts"}
+      className="relative p-2 -m-1 text-muted-fg hover:text-foreground"
+    >
+      <Bell size={17} />
+      {unread > 0 && (
+        <span className="absolute top-0 right-0 min-w-[15px] h-[15px] px-1 rounded-full bg-bearish text-white text-[9px] font-mono font-semibold leading-[15px] text-center">
+          {unread > 99 ? "99+" : unread}
+        </span>
+      )}
+    </Link>
+  );
+}
+
 export function PageHeader({
   title,
   subtitle,
@@ -247,7 +251,10 @@ export function PageHeader({
         <h1 className="text-lg md:text-xl font-semibold tracking-tight text-foreground">{title}</h1>
         {subtitle && <p className="text-xs text-muted-fg mt-0.5">{subtitle}</p>}
       </div>
-      {actions && <div className="flex items-center gap-2">{actions}</div>}
+      <div className="flex items-center gap-2 shrink-0">
+        {actions}
+        <AlertBell />
+      </div>
     </header>
   );
 }

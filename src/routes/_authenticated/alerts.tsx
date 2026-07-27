@@ -67,11 +67,7 @@ function AlertsScreen() {
   const load = useCallback(async () => {
     setLoading(true);
     const [aRes, rRes, pRes, sRes] = await Promise.all([
-      supabase
-        .from("alerts")
-        .select("*")
-        .order("triggered_at", { ascending: false })
-        .limit(200),
+      supabase.from("alerts").select("*").order("triggered_at", { ascending: false }).limit(200),
       supabase.from("alert_rules").select("*").order("symbol"),
       supabase.from("positions").select("id").eq("status", "open"),
       supabase
@@ -304,8 +300,7 @@ function AlertsScreen() {
             ) : sorted.length === 0 ? (
               <div className="surface p-8 text-center">
                 <p className="text-sm text-muted-fg">
-                  No alerts yet. Rules fire once per candle; discipline alerts arrive on
-                  their own.
+                  No alerts yet. Rules fire once per candle; discipline alerts arrive on their own.
                 </p>
               </div>
             ) : (
