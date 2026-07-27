@@ -4,6 +4,7 @@ import { Search, X } from "lucide-react";
 import { PageHeader, PageBody, DisclaimerFooter } from "@/components/app-shell";
 import { TradingViewChart } from "@/components/tradingview-chart";
 import { supabase } from "@/integrations/supabase/client";
+import { callSwing, marketDataHint } from "@/lib/swing-api";
 import { distanceToLinePct } from "@/lib/discipline";
 import {
   normaliseSymbol,
@@ -87,6 +88,9 @@ function ChartsScreen() {
   const [searchOpen, setSearchOpen] = useState(false);
   const [recents, setRecents] = useState<string[]>([]);
   const [level, setLevel] = useState<LevelRow | null>(null);
+  const [fetching, setFetching] = useState(false);
+  const [fetchMsg, setFetchMsg] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
   const [plan, setPlan] = useState<PlanRow | null>(null);
   const [lastClose, setLastClose] = useState<{ close: number; ts: string } | null>(null);
   const [candles, setCandles] = useState<Candle[]>([]);
@@ -125,6 +129,31 @@ function ChartsScreen() {
     }, 160);
     return () => clearTimeout(t);
   }, [query]);
+
+  // Pull history for a symbol on demand. Now that the default price source
+  // needs no login, "wait until tonight" is no longer the honest answer for a
+  // stock that simply hasn't been fetched yet.
+  const fetchHistory = useCallback(async () => {
+    if (!symbol) return;
+    setFetching(true);
+    setFetchMsg(null);
+    try {
+      const r = await callSwing<{ inserted: number; provider?: string }>("ingest_candles", {
+        symbol,
+        timeframe,
+      });
+      if (r.inserted === 0) {
+        setFetchMsg(`No price history came back for ${symbol}. Check the symbol is right.`);
+      } else {
+        // Nudge the loader; it keys off symbol+timeframe.
+        setReloadKey((k) => k + 1);
+      }
+    } catch (e) {
+      setFetchMsg(marketDataHint(e));
+    } finally {
+      setFetching(false);
+    }
+  }, [symbol, timeframe]);
 
   const pick = useCallback(
     (raw: string) => {
@@ -193,14 +222,14 @@ function ChartsScreen() {
     return () => {
       alive = false;
     };
-  }, [symbol, timeframe]);
+  }, [symbol, timeframe, reloadKey]);
 
   const overlays: Overlay[] = useMemo(() => {
     const list: Overlay[] = [];
     if (level?.support != null) {
       list.push({
         price: Number(level.support),
-        label: `Support ${level.support_tests ?? 0}×`,
+        label: `Floor · bounced ${level.support_tests ?? 0}×`,
         color: "#1baf7a",
         style: "dashed",
       });
@@ -208,7 +237,7 @@ function ChartsScreen() {
     if (level?.resistance != null) {
       list.push({
         price: Number(level.resistance),
-        label: `Resistance ${level.resistance_tests ?? 0}×`,
+        label: `Ceiling · stopped ${level.resistance_tests ?? 0}×`,
         color: "#e34948",
         style: "dashed",
       });
@@ -347,7 +376,7 @@ function ChartsScreen() {
               </button>
               <button
                 onClick={() => set({ view: "levels" })}
-                title="Our chart, with your computed support and resistance drawn on it"
+                title="Our own chart, with the floors, ceilings and your exit level drawn on it"
                 className={
                   "text-xs px-2.5 py-1.5 rounded border transition-colors " +
                   (view === "levels"
@@ -369,14 +398,22 @@ function ChartsScreen() {
             ) : view === "tv" ? (
               <TradingViewChart symbol={symbol} interval={tvInterval} height={560} />
             ) : candles.length === 0 ? (
-              <div className="p-12 text-center space-y-2">
-                <p className="text-sm text-foreground">
-                  No stored candles for {symbol} at {timeframe} yet.
+              <div className="p-12 text-center space-y-3">
+                <p className="text-sm text-foreground">No price history stored for {symbol} yet.</p>
+                <p className="text-xs text-muted-fg max-w-sm mx-auto leading-relaxed">
+                  This view draws your own floors, ceilings and exit levels onto the prices we keep.
+                  Fetching takes a few seconds and only has to happen once per stock.
                 </p>
-                <p className="text-xs text-muted-fg">
-                  This view draws your computed support and resistance on our own chart, so it needs
-                  the nightly data. Switch back to Chart for the live TradingView view.
-                </p>
+                <div className="flex flex-col items-center gap-2">
+                  <button
+                    onClick={fetchHistory}
+                    disabled={fetching}
+                    className="btn-primary hover:btn-primary-hover text-xs disabled:opacity-60"
+                  >
+                    {fetching ? "Fetching…" : "Fetch it now"}
+                  </button>
+                  {fetchMsg && <span className="text-xs text-muted-fg max-w-sm">{fetchMsg}</span>}
+                </div>
               </div>
             ) : (
               <Suspense
@@ -399,29 +436,36 @@ function ChartsScreen() {
           {/* Your levels — the numbers that matter, always visible */}
           <div className="surface p-4">
             <div className="text-[11px] text-faint uppercase tracking-widest">
-              Your levels for {symbol}
+              What we measured for {symbol}
             </div>
             {loadingLevels ? (
               <p className="text-sm text-muted-fg mt-2">Loading…</p>
             ) : level == null && plan == null ? (
               <p className="text-sm text-muted-fg mt-2 leading-relaxed">
-                Nothing computed for {symbol} yet. Levels are worked out overnight for the stocks in
-                your screener list — add {symbol} there if you want it measured.
+                Nothing measured for {symbol} yet. Floors and ceilings are worked out overnight for
+                the stocks in your screener universe — add {symbol} under More › Screener universe
+                if you want it measured.
               </p>
             ) : (
               <div className="mt-2 flex flex-wrap gap-x-6 gap-y-2 text-sm font-mono">
                 {level?.support != null && (
                   <span>
-                    <span className="text-faint">Support </span>
+                    <span className="text-faint">Floor </span>
                     <span className="text-bullish">{inr(level.support)}</span>
-                    <span className="text-muted-fg"> · {level.support_tests ?? 0}× tested</span>
+                    <span className="text-muted-fg">
+                      {" "}
+                      · bounced off it {level.support_tests ?? 0}×
+                    </span>
                   </span>
                 )}
                 {level?.resistance != null && (
                   <span>
-                    <span className="text-faint">Resistance </span>
+                    <span className="text-faint">Ceiling </span>
                     <span className="text-bearish">{inr(level.resistance)}</span>
-                    <span className="text-muted-fg"> · {level.resistance_tests ?? 0}× tested</span>
+                    <span className="text-muted-fg">
+                      {" "}
+                      · turned back {level.resistance_tests ?? 0}×
+                    </span>
                   </span>
                 )}
                 {plan?.invalidation_line != null && (
