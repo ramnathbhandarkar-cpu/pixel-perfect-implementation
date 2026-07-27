@@ -61,7 +61,7 @@ Until one of those runs:
 - ✅ Login, Stocks, Plans, Positions, Scorecard, Journal, Alerts inbox,
   Screener, Charts, CSV import, export and offline all work.
 - ⏸️ Live Kite fetches ("Refresh from Kite", "Sync instruments") and the
-  scheduled 5-minute / 15:45 IST jobs wait on the deploy.
+  scheduled intraday / 15:45 IST jobs wait on the deploy.
 
 Levels, the screener and CSV import deliberately run in the browser against
 the owner's own rows, so they never depend on the function being up. The
@@ -102,7 +102,7 @@ secret would let anyone mint sessions against the app:
 
 | Job | Schedule (UTC) | IST | Work |
 | --- | --- | --- | --- |
-| `swing-refresh-5min` | `*/5 3-10 * * 1-5` | 09:15–15:30 | top up 15m + 1d candles, check invalidation lines, evaluate alert rules |
+| `swing-refresh-5min` | `*/15 3-10 * * 1-5` | 09:15–15:30 | top up 15m + 1d candles, check invalidation lines, evaluate alert rules |
 | `swing-nightly-1545` | `15 10 * * 1-5` | 15:45 | refresh dailies, recompute levels, run + persist the screener, summary alert |
 
 The function itself also refuses the refresh outside NSE hours, so the

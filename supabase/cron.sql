@@ -15,11 +15,18 @@
 create extension if not exists pg_cron;
 create extension if not exists pg_net;
 
--- Job 1 — 5-minute candle refresh during market hours (Mon–Fri).
+-- Job 1 — intraday refresh during market hours (Mon–Fri).
 -- Also runs line-crossed detection for open positions (Phase 4.3).
+--
+-- Every 15 minutes, matching the 15m candle it fetches. Running this more
+-- often re-fetches the same unfinished candle and buys nothing: breach
+-- detection compares against the latest *stored close*, so a check between
+-- two candle closes can only ever reach the same verdict as the last one.
+-- It does triple the request count against an unauthenticated provider,
+-- which is how you get rate-limited into looking like an outage.
 select cron.schedule(
   'swing-refresh-5min',
-  '*/5 3-10 * * 1-5',
+  '*/15 3-10 * * 1-5',
   $$
   select net.http_post(
     url     := 'https://mskymzputorcvqehjugq.supabase.co/functions/v1/swing',
