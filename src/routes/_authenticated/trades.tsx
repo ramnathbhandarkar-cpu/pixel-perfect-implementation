@@ -185,14 +185,14 @@ function TradesScreen() {
     <>
       <PageHeader
         title="Trades"
-        subtitle="Plan · position · outcome"
+        subtitle="What you're watching, what you're holding, what it cost"
         actions={
           <button
             onClick={() => (segment === "watching" ? setEditingPlan("new") : setLoggingEntry(true))}
             className="btn-primary hover:btn-primary-hover text-xs"
           >
             <Plus size={13} className="inline -mt-0.5 mr-1" />
-            {segment === "watching" ? "New plan" : "Log entry"}
+            {segment === "watching" ? "Write a plan" : "I bought something"}
           </button>
         }
       />
@@ -221,13 +221,15 @@ function TradesScreen() {
                 >
                   {inr0(metrics.totalDelay)}
                 </span>
-                <span className="text-xs text-muted-fg">lost to waiting</span>
+                <span className="text-xs text-muted-fg">
+                  lost by not selling when you said you would
+                </span>
               </span>
               <span className="text-xs text-muted-fg font-mono">
-                Plan before entry {metrics.planBefore}/{metrics.planTotal}
+                Wrote the plan first {metrics.planBefore}/{metrics.planTotal}
               </span>
               <span className="text-xs text-muted-fg font-mono">
-                Exited on time {metrics.honoured}/{metrics.honoured + metrics.delayed}
+                Sold when you said {metrics.honoured}/{metrics.honoured + metrics.delayed}
               </span>
               <span className="text-xs text-muted-fg font-mono">
                 Win rate{" "}
@@ -244,17 +246,17 @@ function TradesScreen() {
           {showMetrics && (
             <div className="surface p-4 grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
               <Metric
-                label="Closed trades"
+                label="Trades finished"
                 value={String(metrics.stats.n)}
-                note="trades with an exit recorded"
+                note="ones you have sold and written up"
               />
               <Metric
-                label="Average wait after a breach"
+                label="Average wait before selling"
                 value={metrics.avgDelay == null ? "—" : `${metrics.avgDelay.toFixed(1)} h`}
-                note="from the line breaking to your exit"
+                note="from price passing your exit to you actually selling"
               />
               <Metric
-                label="Average win / loss"
+                label="Typical win / typical loss"
                 value={
                   metrics.stats.avgWin == null
                     ? "—"
@@ -264,13 +266,13 @@ function TradesScreen() {
                 }
               />
               <Metric
-                label="Expected per trade"
+                label="Average outcome per trade"
                 value={
                   metrics.stats.expectancy == null
                     ? "—"
                     : `${metrics.stats.expectancy >= 0 ? "" : "−"}${inr0(metrics.stats.expectancy)}`
                 }
-                note="at your current win rate and sizes"
+                note="at the rate and sizes you have been trading"
               />
             </div>
           )}

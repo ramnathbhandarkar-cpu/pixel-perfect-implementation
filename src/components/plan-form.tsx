@@ -110,7 +110,7 @@ export function PlanForm({
     <form onSubmit={save} className="surface p-4 space-y-4 border-accent-info/40">
       <div className="flex items-baseline justify-between">
         <h2 className="text-sm font-semibold text-foreground">
-          {plan ? `Edit plan — ${plan.symbol}` : "New watch plan"}
+          {plan ? `Edit plan — ${plan.symbol}` : "Write a plan"}
         </h2>
         <button type="button" onClick={onCancel} className="text-muted-fg hover:text-foreground">
           <X size={15} />
@@ -135,7 +135,7 @@ export function PlanForm({
           </select>
         </label>
         <label className="block">
-          <span className="text-xs text-muted-fg">Plan type</span>
+          <span className="text-xs text-muted-fg">What kind of setup</span>
           <select
             value={planType}
             onChange={(e) => setPlanType(e.target.value as WatchPlan["plan_type"])}
@@ -149,7 +149,7 @@ export function PlanForm({
           </select>
         </label>
         <label className="block">
-          <span className="text-xs text-warning">Invalidation line (₹) * — required</span>
+          <span className="text-xs text-warning">The price you'd sell at (₹) * — required</span>
           <input
             value={invalidation}
             onChange={(e) => setInvalidation(e.target.value)}
@@ -158,14 +158,14 @@ export function PlanForm({
             min="0"
             required
             className="mt-1 w-full font-mono bg-surface-raised border border-warning/40 rounded-md px-2.5 py-2 text-sm"
-            placeholder="The price at which you are wrong"
+            placeholder="Below this, you were wrong"
           />
         </label>
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <label className="block">
-          <span className="text-xs text-muted-fg">Entry zone low</span>
+          <span className="text-xs text-muted-fg">Buy between (₹)</span>
           <input
             value={entryLow}
             onChange={(e) => setEntryLow(e.target.value)}
@@ -175,7 +175,7 @@ export function PlanForm({
           />
         </label>
         <label className="block">
-          <span className="text-xs text-muted-fg">Entry zone high</span>
+          <span className="text-xs text-muted-fg">…and (₹)</span>
           <input
             value={entryHigh}
             onChange={(e) => setEntryHigh(e.target.value)}
@@ -185,7 +185,7 @@ export function PlanForm({
           />
         </label>
         <label className="block">
-          <span className="text-xs text-muted-fg">Target zone low</span>
+          <span className="text-xs text-muted-fg">Hoping for (₹)</span>
           <input
             value={targetLow}
             onChange={(e) => setTargetLow(e.target.value)}
@@ -195,7 +195,7 @@ export function PlanForm({
           />
         </label>
         <label className="block">
-          <span className="text-xs text-muted-fg">Target zone high</span>
+          <span className="text-xs text-muted-fg">…up to (₹)</span>
           <input
             value={targetHigh}
             onChange={(e) => setTargetHigh(e.target.value)}
@@ -207,7 +207,7 @@ export function PlanForm({
       </div>
 
       <label className="block">
-        <span className="text-xs text-muted-fg">Context — why this setup</span>
+        <span className="text-xs text-muted-fg">Why this one</span>
         <textarea
           value={context}
           onChange={(e) => setContext(e.target.value)}
@@ -217,17 +217,25 @@ export function PlanForm({
       </label>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <ConditionEditor label="Bullish conditions" items={bullish} setItems={setBullish} />
-        <ConditionEditor label="Bearish conditions" items={bearish} setItems={setBearish} />
+        <ConditionEditor
+          label="What would confirm you're right"
+          items={bullish}
+          setItems={setBullish}
+        />
+        <ConditionEditor
+          label="What would tell you to stay out"
+          items={bearish}
+          setItems={setBearish}
+        />
       </div>
 
       <label className="block">
-        <span className="text-xs text-muted-fg">Caveat</span>
+        <span className="text-xs text-muted-fg">Anything that worries you about it</span>
         <input
           value={caveat}
           onChange={(e) => setCaveat(e.target.value)}
           className="mt-1 w-full bg-surface-raised border border-border rounded-md px-2.5 py-2 text-sm"
-          placeholder="What would make this plan wrong even before the line?"
+          placeholder="What could go wrong before price even gets near your exit"
         />
       </label>
 
@@ -237,11 +245,12 @@ export function PlanForm({
           disabled={!canSubmit}
           className="btn-primary hover:btn-primary-hover disabled:opacity-60"
         >
-          {busy ? "Saving…" : plan ? "Save changes" : "Create plan"}
+          {busy ? "Saving…" : plan ? "Save changes" : "Save plan"}
         </button>
         {!invalidation.trim() && (
           <span className="text-xs text-warning">
-            The invalidation line is required — a plan without one is not a plan.
+            The price you'd sell at is required. Deciding it now, calmly, is the whole point — a
+            plan without one is a hope.
           </span>
         )}
         {err && <span className="text-xs text-bearish">{err}</span>}
@@ -295,14 +304,15 @@ export function ResolveForm({
     <form onSubmit={save} className="surface p-4 space-y-3 border-warning/40">
       <div className="flex items-baseline justify-between">
         <h2 className="text-sm font-semibold text-foreground">
-          Resolve plan — <span className="font-mono">{plan.symbol}</span>
+          Close this off — <span className="font-mono">{plan.symbol}</span>
         </h2>
         <button type="button" onClick={onCancel} className="text-muted-fg hover:text-foreground">
           <X size={15} />
         </button>
       </div>
       <p className="text-xs text-muted-fg">
-        Outcome and lessons are required — this is how the track record builds.
+        Both boxes are required. Writing down what happened while it is fresh is what makes the
+        record worth anything later.
       </p>
       <div className="flex gap-2">
         {(["resolved", "faded"] as const).map((s) => (
@@ -317,29 +327,29 @@ export function ResolveForm({
                 : "border-border text-muted-fg hover:text-foreground")
             }
           >
-            {s === "resolved" ? "Resolved (played out)" : "Faded (setup went away)"}
+            {s === "resolved" ? "It played out" : "The setup went away"}
           </button>
         ))}
       </div>
       <label className="block">
-        <span className="text-xs text-muted-fg">Outcome *</span>
+        <span className="text-xs text-muted-fg">What happened *</span>
         <input
           value={outcome}
           onChange={(e) => setOutcome(e.target.value)}
           required
           className="mt-1 w-full bg-surface-raised border border-border rounded-md px-2.5 py-2 text-sm"
-          placeholder="What actually happened"
+          placeholder="How it actually played out"
         />
       </label>
       <label className="block">
-        <span className="text-xs text-muted-fg">Lessons *</span>
+        <span className="text-xs text-muted-fg">What you'd do differently *</span>
         <textarea
           value={lessons}
           onChange={(e) => setLessons(e.target.value)}
           required
           rows={2}
           className="mt-1 w-full bg-surface-raised border border-border rounded-md px-2.5 py-2 text-sm"
-          placeholder="What this plan taught you"
+          placeholder="Even if the answer is nothing"
         />
       </label>
       <button
@@ -375,7 +385,7 @@ function ConditionEditor({
                 setItems(items.map((x, j) => (j === i ? { ...x, text: e.target.value } : x)))
               }
               className="flex-1 bg-surface-raised border border-border rounded-md px-2.5 py-1.5 text-sm"
-              placeholder="Condition…"
+              placeholder="One thing you'd look for…"
             />
             <button
               type="button"

@@ -11,7 +11,7 @@ export const Route = createFileRoute("/_authenticated/settings")({
   head: () => ({
     meta: [
       { title: "Settings · Swing Trade" },
-      { name: "description", content: "Kite token, provider selection, and data health." },
+      { name: "description", content: "Price source, notifications, exports and data health." },
     ],
   }),
   component: SettingsScreen,
@@ -329,7 +329,7 @@ function SettingsScreen() {
 
   return (
     <>
-      <PageHeader title="Settings" subtitle="Provider · Kite token · data health" />
+      <PageHeader title="Settings" subtitle="Where prices come from, how you hear about them" />
       <PageBody>
         <div className="max-w-2xl space-y-6">
           {provider === "kite" && (
@@ -519,7 +519,7 @@ function SettingsScreen() {
           </section>
 
           <section className="surface p-5">
-            <h2 className="text-sm font-semibold text-foreground">Data health</h2>
+            <h2 className="text-sm font-semibold text-foreground">Is the data fresh?</h2>
             <p className="text-xs text-muted-fg mt-1">
               Scheduled jobs run server-side: candle refresh every 5 minutes during market hours,
               levels + screener at 15:45 IST. Run either now to test:
@@ -694,7 +694,7 @@ function SettingsScreen() {
           </section>
 
           <section className="surface p-5">
-            <h2 className="text-sm font-semibold text-foreground">Export</h2>
+            <h2 className="text-sm font-semibold text-foreground">Take your data with you</h2>
             <p className="text-xs text-muted-fg mt-1">
               Your data leaves whenever you want it to — positions, plans, discipline events,
               screener history, journal, everything.

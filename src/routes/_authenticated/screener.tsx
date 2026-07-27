@@ -17,7 +17,7 @@ export const Route = createFileRoute("/_authenticated/screener")({
       { title: "Screener · Swing Trade" },
       {
         name: "description",
-        content: "Reward:risk geometry against tested levels. Descriptive measurements only.",
+        content: "How much room there is above, against how far the floor is below.",
       },
     ],
   }),
@@ -175,23 +175,24 @@ function ScreenerScreen() {
     setProgress(null);
     try {
       const stocks = await loadActiveStocks();
-      if (stocks.length === 0) throw new Error("No active symbols. Add stocks first.");
+      if (stocks.length === 0)
+        throw new Error("Nothing to measure yet — add stocks under More › Screener universe.");
       const levels = await computeAndStoreLevels(stocks, (done, total, sym) =>
-        setProgress(`Computing levels ${done}/${total} · ${sym}`),
+        setProgress(`Working out floors and ceilings ${done}/${total} · ${sym}`),
       );
-      setProgress("Running screener…");
+      setProgress("Measuring…");
       const screener = await runAndStoreScreener(stocks);
       const parts = [
-        `Levels computed for ${levels.computed.length} of ${stocks.length} symbols`,
-        `${screener.result.qualifying.length} qualifying`,
-        `run saved for ${screener.runDate}`,
+        `Measured ${levels.computed.length} of ${stocks.length} stocks`,
+        `${screener.result.qualifying.length} worth a look`,
+        `saved for ${screener.runDate}`,
       ];
       if (levels.skippedInsufficientData.length) {
         parts.push(
-          `${levels.skippedInsufficientData.length} skipped for thin history (need 60+ daily bars)`,
+          `${levels.skippedInsufficientData.length} skipped — fewer than 60 days of price history`,
         );
       }
-      if (levels.failed.length) parts.push(`${levels.failed.length} failed`);
+      if (levels.failed.length) parts.push(`${levels.failed.length} could not be measured`);
       setMsg(`${parts.join(" · ")}.`);
       await load();
     } catch (e) {
@@ -220,14 +221,14 @@ function ScreenerScreen() {
     <>
       <PageHeader
         title="Screener"
-        subtitle="Reward:risk against tested levels · measurements, not recommendations"
+        subtitle="How much room there is above, against how far the floor is below"
         actions={
           <button
             onClick={handleRun}
             disabled={busy || loading}
             className="btn-primary hover:btn-primary-hover text-xs disabled:opacity-60"
           >
-            {busy ? "Running…" : "Compute levels & run screener"}
+            {busy ? "Measuring…" : "Measure again now"}
           </button>
         }
       />
@@ -237,20 +238,20 @@ function ScreenerScreen() {
           <div className="flex flex-wrap gap-x-5 gap-y-1 text-[11px] text-muted-fg font-mono">
             {lastRun && (
               <span>
-                Last saved run <span className="text-foreground">{lastRun.run_date}</span> ·{" "}
-                {Array.isArray(lastRun.qualifying) ? lastRun.qualifying.length : 0} qualifying of{" "}
-                {lastRun.scanned ?? "—"} scanned
+                Last measured <span className="text-foreground">{lastRun.run_date}</span> ·{" "}
+                {Array.isArray(lastRun.qualifying) ? lastRun.qualifying.length : 0} of{" "}
+                {lastRun.scanned ?? "—"} worth a look
               </span>
             )}
             {levelAsOf && (
               <span>
-                Levels as of <span className="text-foreground">{levelAsOf}</span>
+                Floors and ceilings worked out <span className="text-foreground">{levelAsOf}</span>
               </span>
             )}
             {oldestClose && (
               <span className={staleClose ? "text-warning" : ""}>
-                Closes through {oldestClose.slice(0, 10)}
-                {staleClose ? " — stale, refresh candles" : ""}
+                Prices up to {oldestClose.slice(0, 10)}
+                {staleClose ? " — older than 3 days" : ""}
               </span>
             )}
           </div>
@@ -265,18 +266,19 @@ function ScreenerScreen() {
             <div className="text-sm text-muted-fg">Loading…</div>
           ) : inputs.length === 0 && missingData.length === 0 ? (
             <div className="surface p-10 text-center">
-              <p className="text-sm text-muted-fg">
-                No active symbols. Add stocks on the Stocks screen, refresh their daily candles from
-                Charts, then run the screener.
+              <p className="text-sm text-muted-fg leading-relaxed">
+                Nothing is being measured yet. Add the stocks you want watched under More › Screener
+                universe, and they'll be measured overnight from then on.
               </p>
             </div>
           ) : (
             <>
               {result.qualifying.length === 0 ? (
                 <div className="surface p-10 text-center space-y-2">
-                  <p className="text-base text-foreground">No qualifying setups today.</p>
-                  <p className="text-sm text-muted-fg">
-                    That is a normal result, not a failure. Good setups are not a daily occurrence.
+                  <p className="text-base text-foreground">Nothing qualifies today.</p>
+                  <p className="text-sm text-muted-fg leading-relaxed">
+                    That is a normal result, not a failure. Setups worth taking are not a daily
+                    occurrence, and the measurements below show what was ruled out and why.
                   </p>
                 </div>
               ) : (
@@ -286,12 +288,37 @@ function ScreenerScreen() {
                       <tr className="border-b border-border">
                         <th className="text-left px-3 py-2 font-medium">Symbol</th>
                         <th className="num px-3 py-2 font-medium">Price</th>
-                        <th className="num px-3 py-2 font-medium">Support</th>
-                        <th className="num px-3 py-2 font-medium">Resistance</th>
-                        <th className="num px-3 py-2 font-medium">Risk</th>
-                        <th className="num px-3 py-2 font-medium">Reward</th>
-                        <th className="num px-3 py-2 font-medium">Ratio</th>
-                        <th className="text-left px-3 py-2 font-medium">Trend</th>
+                        <th
+                          className="num px-3 py-2 font-medium"
+                          title="The price it has bounced off before"
+                        >
+                          Floor
+                        </th>
+                        <th
+                          className="num px-3 py-2 font-medium"
+                          title="The price it has struggled to pass"
+                        >
+                          Ceiling
+                        </th>
+                        <th
+                          className="num px-3 py-2 font-medium"
+                          title="Price now, down to the floor"
+                        >
+                          Room below
+                        </th>
+                        <th
+                          className="num px-3 py-2 font-medium"
+                          title="Price now, up to the ceiling"
+                        >
+                          Room above
+                        </th>
+                        <th
+                          className="num px-3 py-2 font-medium"
+                          title="Room above for every ₹1 of room below"
+                        >
+                          Above : below
+                        </th>
+                        <th className="text-left px-3 py-2 font-medium">Direction</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -307,14 +334,15 @@ function ScreenerScreen() {
               {clusters.length > 0 && (
                 <div className="surface p-4">
                   <div className="text-[11px] text-faint uppercase tracking-widest">
-                    Sector concentration
+                    Several of these are in the same business
                   </div>
                   {clusters.map((c) => (
-                    <p key={c.sector} className="text-sm text-muted-fg mt-2">
-                      {c.symbols.length} qualifying setups sit in{" "}
+                    <p key={c.sector} className="text-sm text-muted-fg mt-2 leading-relaxed">
+                      {c.symbols.length} of them are{" "}
                       <span className="text-foreground">{c.sector}</span>:{" "}
-                      <span className="font-mono">{c.symbols.join(", ")}</span>. Correlated setups
-                      tend to fail together.
+                      <span className="font-mono">{c.symbols.join(", ")}</span>. Stocks in the same
+                      sector tend to move together, so taking several is closer to one large bet
+                      than to several small ones.
                     </p>
                   ))}
                 </div>
@@ -324,20 +352,21 @@ function ScreenerScreen() {
               {result.rejected.length > 0 && (
                 <div className="surface p-4">
                   <div className="text-[11px] text-faint uppercase tracking-widest">
-                    Rejected — {result.rejected.length} of {result.scanned} scanned
+                    Ruled out — {result.rejected.length} of {result.scanned} measured
                   </div>
                   <RejectionGroup
-                    label={`${result.rejectedThinSupport} rejected: support tested fewer than 2 times`}
-                    note="An untested low is not a floor — it is a recent low nothing has argued with yet."
+                    label={`${result.rejectedThinSupport} where the floor has barely been tested`}
+                    note="A price it has only bounced off once is not a floor yet — it is a recent low nothing has argued with."
                     items={result.rejected.filter((e) => e.rejectionCategory === "thin_support")}
                   />
                   <RejectionGroup
-                    label={`${result.rejectedGeometry} rejected: reward:risk geometry below 1:2`}
+                    label={`${result.rejectedGeometry} where there is less than ₹2 of room above for every ₹1 below`}
+                    note="Being right has to pay more than being wrong costs, or the odds have to be extraordinary."
                     items={result.rejected.filter((e) => e.rejectionCategory === "geometry")}
                   />
                   <RejectionGroup
-                    label={`${result.rejectedRiskBand} rejected: stop distance outside the 1.5%–8% band`}
-                    note="Tighter gets stopped by noise; wider is not a 1–2 week swing."
+                    label={`${result.rejectedRiskBand} where the floor is either too close or too far`}
+                    note="Closer than 1.5% and ordinary daily noise takes you out; further than 8% and it is no longer a one-to-two-week trade."
                     items={result.rejected.filter((e) => e.rejectionCategory === "risk_band")}
                   />
                 </div>
@@ -346,12 +375,12 @@ function ScreenerScreen() {
               {missingData.length > 0 && (
                 <div className="surface p-4">
                   <div className="text-[11px] text-faint uppercase tracking-widest">
-                    No data yet — {missingData.length}
+                    Couldn't be measured — {missingData.length}
                   </div>
-                  <p className="text-sm text-muted-fg mt-2">
+                  <p className="text-sm text-muted-fg mt-2 leading-relaxed">
                     <span className="font-mono">{missingData.join(", ")}</span>
-                    {" — "}no stored level or recent daily close. Refresh candles on Charts, then
-                    run the screener to compute levels.
+                    {" — "}there isn't enough recent price history for these yet. They will be
+                    picked up on the next overnight run.
                   </p>
                 </div>
               )}

@@ -123,7 +123,7 @@ function StocksScreen() {
 
   return (
     <>
-      <PageHeader title="Stocks" subtitle="Manage your symbol universe · NSE" />
+      <PageHeader title="Screener universe" subtitle="The stocks measured overnight" />
       <PageBody>
         <div className="flex gap-1 mb-4 border-b border-border">
           {TABS.map((t) => (

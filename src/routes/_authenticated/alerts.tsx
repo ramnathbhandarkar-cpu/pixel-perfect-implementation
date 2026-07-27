@@ -8,7 +8,7 @@ export const Route = createFileRoute("/_authenticated/alerts")({
   head: () => ({
     meta: [
       { title: "Alerts · Swing Trade" },
-      { name: "description", content: "Alert inbox and rule configuration." },
+      { name: "description", content: "What the app noticed, and what you asked it to watch for." },
     ],
   }),
   component: AlertsScreen,
@@ -36,9 +36,9 @@ interface RuleRow {
 }
 
 const RULE_TYPES: { key: RuleRow["rule_type"]; label: string; needsThreshold: boolean }[] = [
-  { key: "volume_hourly", label: "Hourly volume above", needsThreshold: true },
-  { key: "level_cross", label: "Level crossed (S/R)", needsThreshold: false },
-  { key: "price_target", label: "Price crosses", needsThreshold: true },
+  { key: "price_target", label: "Price reaches", needsThreshold: true },
+  { key: "level_cross", label: "Passes its floor or ceiling", needsThreshold: false },
+  { key: "volume_hourly", label: "Hourly volume goes above", needsThreshold: true },
 ];
 
 const istTime = (iso: string) =>
@@ -166,7 +166,7 @@ function AlertsScreen() {
     <>
       <PageHeader
         title="Alerts"
-        subtitle="Inbox and rules · one alert per candle, never more"
+        subtitle="Told once per candle, never nagged"
         actions={
           unread > 0 ? (
             <button
@@ -184,7 +184,7 @@ function AlertsScreen() {
 
           {/* Rules */}
           <section className="surface p-4">
-            <h2 className="text-sm font-semibold text-foreground">Rules</h2>
+            <h2 className="text-sm font-semibold text-foreground">Tell me when…</h2>
             <form onSubmit={addRule} className="mt-3 flex flex-wrap items-end gap-2">
               <label className="block">
                 <span className="text-xs text-muted-fg">Symbol</span>
@@ -202,7 +202,7 @@ function AlertsScreen() {
                 </select>
               </label>
               <label className="block">
-                <span className="text-xs text-muted-fg">Rule</span>
+                <span className="text-xs text-muted-fg">Watch for</span>
                 <select
                   value={ruleType}
                   onChange={(e) => setRuleType(e.target.value as RuleRow["rule_type"])}
@@ -218,7 +218,7 @@ function AlertsScreen() {
               {RULE_TYPES.find((t) => t.key === ruleType)?.needsThreshold && (
                 <label className="block">
                   <span className="text-xs text-muted-fg">
-                    {ruleType === "volume_hourly" ? "Volume threshold" : "Price (₹)"}
+                    {ruleType === "volume_hourly" ? "Shares traded in an hour" : "Price (₹)"}
                   </span>
                   <input
                     value={ruleThreshold}
@@ -235,7 +235,7 @@ function AlertsScreen() {
                 disabled={savingRule}
                 className="btn-primary hover:btn-primary-hover text-xs disabled:opacity-60"
               >
-                Add rule
+                Add
               </button>
             </form>
 
@@ -244,10 +244,10 @@ function AlertsScreen() {
                 <thead className="text-[11px] uppercase tracking-widest text-faint">
                   <tr className="border-b border-border">
                     <th className="text-left px-2 py-1.5 font-medium">Symbol</th>
-                    <th className="text-left px-2 py-1.5 font-medium">Rule</th>
-                    <th className="num px-2 py-1.5 font-medium">Threshold</th>
-                    <th className="text-left px-2 py-1.5 font-medium">Last fired</th>
-                    <th className="text-right px-2 py-1.5 font-medium">Active</th>
+                    <th className="text-left px-2 py-1.5 font-medium">Watching for</th>
+                    <th className="num px-2 py-1.5 font-medium">At</th>
+                    <th className="text-left px-2 py-1.5 font-medium">Last told you</th>
+                    <th className="text-right px-2 py-1.5 font-medium">On</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -277,7 +277,7 @@ function AlertsScreen() {
                           <button
                             onClick={() => deleteRule(r)}
                             className="text-muted-fg hover:text-bearish p-1"
-                            title="Delete rule"
+                            title="Remove"
                           >
                             <Trash2 size={13} />
                           </button>
@@ -293,14 +293,17 @@ function AlertsScreen() {
           {/* Inbox */}
           <section className="space-y-2">
             <h2 className="text-[11px] text-faint uppercase tracking-widest">
-              Inbox {unread > 0 && <span className="text-foreground">· {unread} unread</span>}
+              What happened{" "}
+              {unread > 0 && <span className="text-foreground">· {unread} unread</span>}
             </h2>
             {loading ? (
               <div className="text-sm text-muted-fg">Loading…</div>
             ) : sorted.length === 0 ? (
               <div className="surface p-8 text-center">
                 <p className="text-sm text-muted-fg">
-                  No alerts yet. Rules fire once per candle; discipline alerts arrive on their own.
+                  Nothing to report. Anything you ask to be watched shows up here, at most once per
+                  candle — and if price passes an exit you set, you hear about it whether you asked
+                  or not.
                 </p>
               </div>
             ) : (
@@ -342,7 +345,8 @@ function AlertsScreen() {
                         {a.body && <p className="text-xs text-muted-fg mt-1">{a.body}</p>}
                         {pinned && (
                           <p className="text-[11px] text-bearish mt-1">
-                            Pinned while the position remains open beyond its line.
+                            Stays here while you're still holding this past the price you said you'd
+                            sell at.
                           </p>
                         )}
                       </div>
