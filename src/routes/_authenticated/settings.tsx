@@ -5,6 +5,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { callSwing, marketDataHint } from "@/lib/swing-api";
 import { disablePush, enablePush, pushStatus, sendTestPush, type PushState } from "@/lib/push";
 import { EXPORT_TABLES, exportAllJson, exportTableCsv, type ExportTable } from "@/lib/export";
+import { ALERT_TYPES, normalisePrefs, type TelegramPrefs } from "@/lib/telegram";
 
 export const Route = createFileRoute("/_authenticated/settings")({
   head: () => ({
@@ -37,6 +38,13 @@ const PROVIDERS: { key: Provider; label: string; blurb: string }[] = [
   },
 ];
 
+interface TelegramStatus {
+  configured: boolean;
+  bot_masked: string | null;
+  chat_masked: string | null;
+  prefs: TelegramPrefs;
+}
+
 interface KiteStatus {
   api_key_masked?: string | null;
   token_updated_at?: string | null;
@@ -66,6 +74,11 @@ function SettingsScreen() {
   const [showManual, setShowManual] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const [connectMsg, setConnectMsg] = useState<string | null>(null);
+  const [tg, setTg] = useState<TelegramStatus | null>(null);
+  const [tgToken, setTgToken] = useState("");
+  const [tgChat, setTgChat] = useState("");
+  const [tgBusy, setTgBusy] = useState(false);
+  const [tgMsg, setTgMsg] = useState<string | null>(null);
 
   const redirectUrl =
     typeof window === "undefined" ? "/kite/callback" : `${window.location.origin}/kite/callback`;
@@ -147,6 +160,21 @@ function SettingsScreen() {
       }
     })();
     void pushStatus().then(setPush);
+    // Telegram status comes from the edge function because the credentials
+    // are server-side. If the function is unreachable, show it as
+    // unconfigured rather than blocking the rest of the screen.
+    void callSwing<TelegramStatus>("telegram_status")
+      .then((s) => mounted && setTg({ ...s, prefs: normalisePrefs(s.prefs) }))
+      .catch(() => {
+        if (mounted) {
+          setTg({
+            configured: false,
+            bot_masked: null,
+            chat_masked: null,
+            prefs: normalisePrefs(null),
+          });
+        }
+      });
     return () => {
       mounted = false;
     };
@@ -185,6 +213,63 @@ function SettingsScreen() {
       setPushMsg(e instanceof Error ? e.message : String(e));
     } finally {
       setPushBusy(false);
+    }
+  }
+
+  async function saveTelegram() {
+    setTgBusy(true);
+    setTgMsg(null);
+    try {
+      await callSwing("telegram_set", { bot_token: tgToken.trim(), chat_id: tgChat.trim() });
+      // The token is proven working server-side before it is stored, so
+      // there is nothing left in the browser to clear up later.
+      setTgToken("");
+      setTgChat("");
+      setTg(await callSwing<TelegramStatus>("telegram_status"));
+      setTgMsg("Connected — check Telegram for the confirmation message.");
+    } catch (e) {
+      setTgMsg(e instanceof Error ? e.message : String(e));
+    } finally {
+      setTgBusy(false);
+    }
+  }
+
+  async function testTelegram() {
+    setTgBusy(true);
+    setTgMsg(null);
+    try {
+      await callSwing("telegram_test");
+      setTgMsg("Test message sent.");
+    } catch (e) {
+      setTgMsg(e instanceof Error ? e.message : String(e));
+    } finally {
+      setTgBusy(false);
+    }
+  }
+
+  async function disconnectTelegram() {
+    setTgBusy(true);
+    setTgMsg(null);
+    try {
+      await callSwing("telegram_disconnect");
+      setTg(await callSwing<TelegramStatus>("telegram_status"));
+      setTgMsg("Disconnected.");
+    } catch (e) {
+      setTgMsg(e instanceof Error ? e.message : String(e));
+    } finally {
+      setTgBusy(false);
+    }
+  }
+
+  async function saveTgPrefs(next: TelegramPrefs) {
+    // Optimistic: a checkbox that lags behind the finger feels broken.
+    setTg((s) => (s ? { ...s, prefs: next } : s));
+    const { error } = await supabase
+      .from("settings")
+      .upsert({ key: "telegram", value: next }, { onConflict: "user_id,key" });
+    if (error) {
+      setTgMsg(error.message);
+      setTg(await callSwing<TelegramStatus>("telegram_status"));
     }
   }
 
@@ -457,11 +542,125 @@ function SettingsScreen() {
             </div>
           </section>
 
+          {/* Telegram — the channel he actually reads. */}
           <section className="surface p-5">
-            <h2 className="text-sm font-semibold text-foreground">Notifications</h2>
-            <p className="text-xs text-muted-fg mt-1">
-              Web Push delivers alerts to this device even when the app is closed — including
-              critical invalidation-line breaches.
+            <h2 className="text-sm font-semibold text-foreground">Telegram</h2>
+            <p className="text-xs text-muted-fg mt-1 leading-relaxed">
+              Alerts can arrive in Telegram as well as on this device. Create a bot with{" "}
+              <span className="font-mono">@BotFather</span>, send it any message, then paste its
+              token and your chat id below. Both are stored on the server — the app in your browser
+              never sees them.
+            </p>
+
+            {tg?.configured ? (
+              <div className="mt-3 text-xs text-muted-fg font-mono">
+                Connected · bot {tg.bot_masked} · chat {tg.chat_masked}
+              </div>
+            ) : (
+              <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                <label className="block">
+                  <span className="text-xs text-muted-fg">Bot token</span>
+                  <input
+                    value={tgToken}
+                    onChange={(e) => setTgToken(e.target.value)}
+                    type="password"
+                    autoComplete="off"
+                    placeholder="123456:ABC-DEF…"
+                    className="mt-1 w-full font-mono bg-surface-raised border border-border rounded-md px-2.5 py-2 text-sm"
+                  />
+                </label>
+                <label className="block">
+                  <span className="text-xs text-muted-fg">Chat id</span>
+                  <input
+                    value={tgChat}
+                    onChange={(e) => setTgChat(e.target.value)}
+                    autoComplete="off"
+                    placeholder="e.g. 87654321"
+                    className="mt-1 w-full font-mono bg-surface-raised border border-border rounded-md px-2.5 py-2 text-sm"
+                  />
+                </label>
+              </div>
+            )}
+
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              {!tg?.configured ? (
+                <button
+                  onClick={saveTelegram}
+                  disabled={tgBusy || !tgToken.trim() || !tgChat.trim()}
+                  className="btn-primary hover:btn-primary-hover text-xs disabled:opacity-60"
+                >
+                  {tgBusy ? "Connecting…" : "Connect Telegram"}
+                </button>
+              ) : (
+                <>
+                  <button
+                    onClick={testTelegram}
+                    disabled={tgBusy}
+                    className="text-xs px-3 py-1.5 rounded border border-border text-muted-fg hover:text-foreground disabled:opacity-60"
+                  >
+                    Send a test message
+                  </button>
+                  <button
+                    onClick={disconnectTelegram}
+                    disabled={tgBusy}
+                    className="text-xs px-3 py-1.5 rounded border border-border text-muted-fg hover:text-bearish disabled:opacity-60"
+                  >
+                    Disconnect
+                  </button>
+                </>
+              )}
+              {tgMsg && <span className="text-xs text-muted-fg">{tgMsg}</span>}
+            </div>
+
+            {tg?.configured && (
+              <div className="mt-4 border-t border-border pt-3">
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={tg.prefs.enabled}
+                    onChange={(e) => saveTgPrefs({ ...tg.prefs, enabled: e.target.checked })}
+                    className="accent-[var(--accent-info)]"
+                  />
+                  <span className="text-foreground">Send alerts to Telegram</span>
+                </label>
+
+                <div
+                  className={
+                    "mt-3 space-y-2.5 transition-opacity " + (tg.prefs.enabled ? "" : "opacity-40")
+                  }
+                >
+                  {ALERT_TYPES.map((t) => (
+                    <label key={t.key} className="flex items-start gap-2.5">
+                      <input
+                        type="checkbox"
+                        disabled={!tg.prefs.enabled || t.locked}
+                        checked={t.locked ? true : tg.prefs.types[t.key] === true}
+                        onChange={(e) =>
+                          saveTgPrefs({
+                            ...tg.prefs,
+                            types: { ...tg.prefs.types, [t.key]: e.target.checked },
+                          })
+                        }
+                        className="mt-0.5 accent-[var(--accent-info)]"
+                      />
+                      <span className="min-w-0">
+                        <span className="block text-sm text-foreground">{t.label}</span>
+                        <span className="block text-xs text-muted-fg leading-relaxed">
+                          {t.blurb}
+                        </span>
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            )}
+          </section>
+
+          <section className="surface p-5">
+            <h2 className="text-sm font-semibold text-foreground">Notifications on this device</h2>
+            <p className="text-xs text-muted-fg mt-1 leading-relaxed">
+              Alerts can also arrive as a phone or desktop notification while the app is closed.
+              This is per-device, so turn it on wherever you want to be reachable.
             </p>
             <div className="mt-3 flex flex-wrap items-center gap-2">
               <button

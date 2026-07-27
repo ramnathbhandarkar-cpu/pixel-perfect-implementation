@@ -18,6 +18,14 @@ import { computeLevels, type DailyCandle } from "./levels-engine.ts";
 import { runScreener, type ScreenerInput } from "./screener-engine.ts";
 import { extractRequestToken, kiteChecksum, kiteLoginUrl } from "./kite-login.ts";
 import { parseYahooChart, yahooChartUrl, type YahooChartResponse } from "./yahoo.ts";
+import {
+  normalisePrefs,
+  shouldSend,
+  telegramMessage,
+  telegramSendUrl,
+  type AlertType,
+  type Severity,
+} from "./telegram.ts";
 
 type Timeframe = "15m" | "1h" | "1d" | "1wk";
 const KITE_INTERVAL: Record<Timeframe, string> = {
@@ -492,8 +500,9 @@ async function insertAlert(
     payload: alert.payload ?? null,
   });
   if (error) console.error(`Alert insert failed: ${error.message}`);
-  // Web Push so alerts arrive with the app closed. Best-effort; the inbox
-  // row above is the source of truth.
+  // Web Push and Telegram so alerts arrive with the app closed. Both are
+  // best-effort; the inbox row above is the source of truth, and a delivery
+  // failure must never take down the pipeline that produced the alert.
   try {
     await sendPushToAll({
       title: alert.symbol ? `${alert.symbol} — ${alert.title}` : alert.title,
@@ -503,6 +512,62 @@ async function insertAlert(
   } catch (e) {
     console.error(`Push send failed: ${e instanceof Error ? e.message : e}`);
   }
+  try {
+    await sendTelegram(alert);
+  } catch (e) {
+    console.error(`Telegram send failed: ${e instanceof Error ? e.message : e}`);
+  }
+}
+
+// ── Telegram (bot token + chat id live in server_secrets) ────
+
+async function telegramPrefs() {
+  const { data } = await db.from("settings").select("value").eq("key", "telegram").limit(1);
+  return normalisePrefs(data?.[0]?.value);
+}
+
+async function telegramCreds(): Promise<{ bot_token: string; chat_id: string } | null> {
+  const v = await getSecret("telegram");
+  if (!v?.bot_token || !v?.chat_id) return null;
+  return { bot_token: v.bot_token, chat_id: v.chat_id };
+}
+
+/** Post one alert to Telegram. Returns false when it was deliberately skipped. */
+async function sendTelegram(alert: {
+  symbol?: string | null;
+  alert_type: string;
+  severity: Severity;
+  title: string;
+  body: string;
+}): Promise<boolean> {
+  const creds = await telegramCreds();
+  if (!creds) return false; // not configured — silently skip
+  const prefs = await telegramPrefs();
+  if (!shouldSend(prefs, alert.alert_type as AlertType, alert.severity)) return false;
+  return await postTelegram(creds, telegramMessage(alert));
+}
+
+async function postTelegram(
+  creds: { bot_token: string; chat_id: string },
+  text: string,
+): Promise<boolean> {
+  const res = await fetch(telegramSendUrl(creds.bot_token), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      chat_id: creds.chat_id,
+      text,
+      parse_mode: "HTML",
+      disable_web_page_preview: true,
+    }),
+  });
+  if (!res.ok) {
+    // Never echo the token — it is in the URL, not the body, but the
+    // description can quote the request.
+    const detail = (await res.text()).slice(0, 200).replace(creds.bot_token, "***");
+    throw new Error(`Telegram ${res.status}: ${detail}`);
+  }
+  return true;
 }
 
 // ── Web Push (VAPID keys live in server_secrets.vapid) ───────
@@ -1230,6 +1295,69 @@ async function actionNightly(uid: string | null) {
   };
 }
 
+// ── Telegram actions ─────────────────────────────────────────
+
+const maskTail = (s: string, keep = 4) =>
+  s.length <= keep ? "•".repeat(s.length) : "•".repeat(Math.min(8, s.length - keep)) + s.slice(-keep);
+
+async function actionTelegramStatus() {
+  const creds = await telegramCreds();
+  const prefs = await telegramPrefs();
+  return {
+    configured: creds != null,
+    // Enough to recognise which bot and chat, never enough to use them.
+    bot_masked: creds ? maskTail(creds.bot_token) : null,
+    chat_masked: creds ? maskTail(creds.chat_id) : null,
+    prefs,
+  };
+}
+
+async function actionTelegramSet(body: Record<string, unknown>) {
+  const botToken = typeof body.bot_token === "string" ? body.bot_token.trim() : "";
+  const chatId = typeof body.chat_id === "string" ? body.chat_id.trim() : "";
+  const existing = (await getSecret("telegram")) ?? {};
+  const finalToken = botToken || existing.bot_token;
+  const finalChat = chatId || existing.chat_id;
+  if (!finalToken || !finalChat) throw new Error("bot_token and chat_id are both required");
+
+  // Prove the pair works before storing it, so "saved" never means
+  // "saved and silently broken".
+  await postTelegram(
+    { bot_token: finalToken, chat_id: finalChat },
+    telegramMessage({
+      severity: "info",
+      title: "Swing Trade is connected",
+      body: "Alerts that matter will arrive here. You can turn individual kinds on and off in Settings.",
+    }),
+  );
+  await setSecret("telegram", {
+    bot_token: finalToken,
+    chat_id: finalChat,
+    updated_at: new Date().toISOString(),
+  });
+  return { ok: true, bot_masked: maskTail(finalToken), chat_masked: maskTail(finalChat) };
+}
+
+async function actionTelegramTest() {
+  const creds = await telegramCreds();
+  if (!creds) throw new Error("Telegram is not connected yet. Add the bot token and chat id first.");
+  await postTelegram(
+    creds,
+    telegramMessage({
+      severity: "info",
+      title: "Test message",
+      body: "If you can read this, alerts will reach you here.",
+    }),
+  );
+  return { ok: true };
+}
+
+async function actionTelegramDisconnect() {
+  const { error } = await db.from("server_secrets").delete().eq("key", "telegram");
+  if (error) throw new Error(`Telegram disconnect failed: ${error.message}`);
+  return { ok: true };
+}
+
 // ── push subscription actions ────────────────────────────────
 
 async function actionGetVapidPublic() {
@@ -1338,6 +1466,14 @@ Deno.serve(async (req) => {
         return json(await actionPushUnsubscribe(body));
       case "push_test":
         return json(await actionPushTest());
+      case "telegram_status":
+        return json(await actionTelegramStatus());
+      case "telegram_set":
+        return json(await actionTelegramSet(body));
+      case "telegram_test":
+        return json(await actionTelegramTest());
+      case "telegram_disconnect":
+        return json(await actionTelegramDisconnect());
       default:
         return json({ error: `unknown action "${action}"` }, 400);
     }
