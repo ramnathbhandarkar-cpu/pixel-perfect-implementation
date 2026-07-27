@@ -52,6 +52,36 @@ jobs:
         with:
           version: latest
 
+      # The default price source is unauthenticated, so its response shape is
+      # the one thing we cannot pin with a contract. Fetch a real symbol and
+      # run it through the same parser the function uses, so a change in
+      # Yahoo's payload fails here rather than silently at 3am.
+      - name: Verify the free price source still answers the shape we parse
+        run: |
+          set -o pipefail
+          curl -sS --max-time 30 \
+            -H 'User-Agent: Mozilla/5.0' \
+            "https://query1.finance.yahoo.com/v8/finance/chart/RELIANCE.NS?interval=1d&range=1mo" \
+            -o /tmp/yahoo.json
+          node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            const body = JSON.parse(readFileSync("/tmp/yahoo.json", "utf8"));
+            const r = body?.chart?.result?.[0];
+            const q = r?.indicators?.quote?.[0];
+            if (!r?.timestamp?.length || !q?.close?.length) {
+              console.error("::error::Yahoo payload no longer has timestamp/indicators.quote[0]");
+              process.exit(1);
+            }
+            const good = r.timestamp.filter((_, i) =>
+              [q.open, q.high, q.low, q.close].every((a) => Number.isFinite(a?.[i])),
+            ).length;
+            console.log(`bars=${r.timestamp.length} usable=${good}`);
+            if (good < 5) {
+              console.error("::error::fewer than 5 usable daily bars in a 1-month window");
+              process.exit(1);
+            }
+          '
+
       - name: Deploy the swing edge function
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}

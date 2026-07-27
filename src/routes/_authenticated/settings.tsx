@@ -16,7 +16,26 @@ export const Route = createFileRoute("/_authenticated/settings")({
   component: SettingsScreen,
 });
 
-type Provider = "kite" | "manual";
+type Provider = "yahoo" | "kite" | "manual";
+
+const PROVIDERS: { key: Provider; label: string; blurb: string }[] = [
+  {
+    key: "yahoo",
+    label: "Automatic",
+    blurb: "Free public price data. Nothing to log into, nothing to renew.",
+  },
+  {
+    key: "kite",
+    label: "Zerodha Kite",
+    blurb:
+      "Sharper data from your own broker account, but it needs a login each trading morning. If the login has lapsed, prices quietly come from the free source instead.",
+  },
+  {
+    key: "manual",
+    label: "CSV only",
+    blurb: "Nothing is fetched. You upload price files yourself.",
+  },
+];
 
 interface KiteStatus {
   api_key_masked?: string | null;
@@ -26,7 +45,9 @@ interface KiteStatus {
 }
 
 function SettingsScreen() {
-  const [provider, setProvider] = useState<Provider>("kite");
+  // Automatic by default: the app has to work on a morning when nobody has
+  // logged into anything.
+  const [provider, setProvider] = useState<Provider>("yahoo");
   const [apiKey, setApiKey] = useState("");
   const [accessToken, setAccessToken] = useState("");
   const [status, setStatus] = useState<KiteStatus | null>(null);
@@ -117,7 +138,8 @@ function SettingsScreen() {
       if (!mounted || !data) return;
       for (const row of data) {
         if (row.key === "provider" && row.value?.name) {
-          setProvider(row.value.name === "manual" ? "manual" : "kite");
+          const name = row.value.name as string;
+          setProvider(name === "kite" || name === "manual" ? name : "yahoo");
         }
         if (row.key === "kite_status" && row.value) {
           setStatus(row.value as KiteStatus);
@@ -245,24 +267,40 @@ function SettingsScreen() {
           )}
 
           <section className="surface p-5">
-            <h2 className="text-sm font-semibold text-foreground">Market data provider</h2>
-            <p className="text-xs text-muted-fg mt-1">
-              The provider fetches candles for your active symbols. Kite is primary; Manual accepts
-              CSV uploads.
+            <h2 className="text-sm font-semibold text-foreground">Where prices come from</h2>
+            <p className="text-xs text-muted-fg mt-1 leading-relaxed">
+              Prices for the stocks you follow are collected overnight and during market hours. You
+              do not have to change this.
             </p>
-            <div className="mt-3 flex gap-2">
-              {(["kite", "manual"] as Provider[]).map((p) => (
+            <div className="mt-3 space-y-2">
+              {PROVIDERS.map((p) => (
                 <button
-                  key={p}
-                  onClick={() => saveProvider(p)}
+                  key={p.key}
+                  onClick={() => saveProvider(p.key)}
                   className={
-                    "text-xs px-3 py-1.5 rounded border transition-colors " +
-                    (provider === p
-                      ? "bg-accent-info/15 border-accent-info text-foreground"
-                      : "border-border text-muted-fg hover:text-foreground")
+                    "w-full text-left px-3 py-2.5 rounded border transition-colors " +
+                    (provider === p.key
+                      ? "bg-accent-info/10 border-accent-info"
+                      : "border-border hover:border-border-strong")
                   }
                 >
-                  {p === "kite" ? "Kite Connect" : "Manual / CSV"}
+                  <span className="flex items-baseline gap-2">
+                    <span
+                      className={
+                        "text-sm " + (provider === p.key ? "text-foreground" : "text-muted-fg")
+                      }
+                    >
+                      {p.label}
+                    </span>
+                    {p.key === "yahoo" && (
+                      <span className="text-[10px] text-faint uppercase tracking-widest">
+                        default
+                      </span>
+                    )}
+                  </span>
+                  <span className="block text-xs text-muted-fg mt-1 leading-relaxed">
+                    {p.blurb}
+                  </span>
                 </button>
               ))}
             </div>

@@ -17,6 +17,7 @@ import webpush from "npm:web-push@3.6.7";
 import { computeLevels, type DailyCandle } from "./levels-engine.ts";
 import { runScreener, type ScreenerInput } from "./screener-engine.ts";
 import { extractRequestToken, kiteChecksum, kiteLoginUrl } from "./kite-login.ts";
+import { parseYahooChart, yahooChartUrl, type YahooChartResponse } from "./yahoo.ts";
 
 type Timeframe = "15m" | "1h" | "1d" | "1wk";
 const KITE_INTERVAL: Record<Timeframe, string> = {
@@ -25,9 +26,14 @@ const KITE_INTERVAL: Record<Timeframe, string> = {
   "1d": "day",
   "1wk": "week",
 };
+const isTimeframe = (v: string): v is Timeframe => v in KITE_INTERVAL;
+
 // Providers throttle parallel bursts and return empty arrays that look like
 // "no data" rather than errors — space calls out instead.
 const SPACING_MS = 350;
+// Yahoo is unauthenticated and rate-limits harder; give it more room.
+const YAHOO_SPACING_MS = 400;
+const YAHOO_BACKOFF_MS = [2000, 5000];
 const LEVELS_METHOD = "swing_pivot_1y";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
@@ -306,6 +312,100 @@ async function fetchKiteCandles(
     close: row[4],
     volume: row[5],
   }));
+}
+
+// ── Yahoo Finance (no auth, and therefore the default) ───────
+//
+// Kite is the better feed, but its access token dies every trading day and a
+// dead token used to mean the whole app went quiet. Yahoo needs no
+// credentials, so the pipeline has something to fall back to at 9am when
+// nobody has logged into anything.
+
+async function fetchYahooCandles(
+  symbol: string,
+  timeframe: Timeframe,
+  days: number,
+  uid: string | null,
+): Promise<CandleRow[]> {
+  const url = yahooChartUrl(symbol, timeframe, days);
+  let lastErr: unknown = null;
+
+  // Three attempts. Yahoo answers a burst with 429 or an HTML error page far
+  // more often than it answers with bad data, and both recover on a retry.
+  for (let attempt = 0; attempt <= YAHOO_BACKOFF_MS.length; attempt++) {
+    if (attempt > 0) await sleep(YAHOO_BACKOFF_MS[attempt - 1]);
+    try {
+      const res = await fetch(url, {
+        headers: {
+          // Yahoo serves a consent interstitial to clients with no UA.
+          "user-agent":
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
+            "(KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+          accept: "application/json,text/plain,*/*",
+        },
+      });
+      if (res.status === 429 || res.status >= 500) {
+        lastErr = new Error(`Yahoo ${res.status} for ${symbol}`);
+        continue;
+      }
+      const text = await res.text();
+      let body: YahooChartResponse;
+      try {
+        body = JSON.parse(text) as YahooChartResponse;
+      } catch {
+        lastErr = new Error(`Yahoo returned non-JSON for ${symbol} (${res.status})`);
+        continue;
+      }
+      // A 404 with a proper error body means the ticker does not exist —
+      // that is an answer, not a transport failure, so stop retrying.
+      const rows = parseYahooChart(body, symbol, timeframe);
+      return rows.map((r) => ({ ...r, user_id: uid }));
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw new Error(
+    `Yahoo fetch failed for ${symbol} ${timeframe}: ${
+      lastErr instanceof Error ? lastErr.message : String(lastErr)
+    }`,
+  );
+}
+
+// ── provider selection ───────────────────────────────────────
+
+type Provider = "yahoo" | "kite" | "manual";
+
+async function activeProvider(): Promise<Provider> {
+  const { data } = await db.from("settings").select("value").eq("key", "provider").limit(1);
+  const name = (data?.[0]?.value as { name?: string } | undefined)?.name;
+  return name === "kite" || name === "manual" ? name : "yahoo";
+}
+
+/**
+ * Fetch candles from whichever provider is configured.
+ *
+ * Kite falls back to Yahoo rather than failing: an expired token is the
+ * normal state of a Kite integration most of the day, and the owner should
+ * get slightly worse data instead of no data.
+ */
+async function fetchCandles(
+  symbol: string,
+  timeframe: Timeframe,
+  days: number,
+  uid: string | null,
+  provider: Provider,
+): Promise<{ rows: CandleRow[]; usedProvider: Provider; spacingMs: number }> {
+  if (provider === "kite") {
+    try {
+      const creds = await kiteCreds();
+      const rows = await fetchKiteCandles(symbol, timeframe, days, creds, uid);
+      return { rows, usedProvider: "kite", spacingMs: SPACING_MS };
+    } catch (e) {
+      console.warn(`Kite failed for ${symbol}, falling back to Yahoo: ${String(e)}`);
+    }
+  }
+  const rows = await fetchYahooCandles(symbol, timeframe, days, uid);
+  return { rows, usedProvider: "yahoo", spacingMs: YAHOO_SPACING_MS };
 }
 
 async function upsertCandles(rows: CandleRow[]): Promise<number> {
@@ -741,21 +841,32 @@ async function refreshCandles(
   stocks: ActiveStock[],
   jobs: { timeframe: Timeframe; days: number }[],
 ) {
-  const creds = await kiteCreds();
+  const configured = await activeProvider();
   const summary = {
+    provider: configured,
+    usedProviders: [] as Provider[],
     fetched: {} as Record<string, number>,
     totalRows: 0,
     errors: [] as { symbol: string; error: string }[],
     allZero: false,
   };
+  // "Manual" means CSV uploads only — nothing to fetch, and reporting zero
+  // rows here would look like a provider outage.
+  if (configured === "manual") {
+    return { ...summary, skipped: "provider is manual (CSV only)" };
+  }
+  const used = new Set<Provider>();
   for (const stock of stocks) {
     let rowsForSymbol = 0;
     for (const job of jobs) {
+      let spacing = SPACING_MS;
       try {
-        const rows = await fetchKiteCandles(stock.symbol, job.timeframe, job.days, creds, uid);
-        if (rows.length > 0) {
-          await upsertCandles(rows);
-          rowsForSymbol += rows.length;
+        const got = await fetchCandles(stock.symbol, job.timeframe, job.days, uid, configured);
+        spacing = got.spacingMs;
+        used.add(got.usedProvider);
+        if (got.rows.length > 0) {
+          await upsertCandles(got.rows);
+          rowsForSymbol += got.rows.length;
         }
       } catch (e) {
         summary.errors.push({
@@ -763,11 +874,12 @@ async function refreshCandles(
           error: String(e instanceof Error ? e.message : e),
         });
       }
-      await sleep(SPACING_MS);
+      await sleep(spacing);
     }
     summary.fetched[stock.symbol] = rowsForSymbol;
     summary.totalRows += rowsForSymbol;
   }
+  summary.usedProviders = [...used];
   // Zero rows for *all* symbols = provider failure, not "no data".
   // (This exact bug once silently wiped a working dataset.) Callers must
   // alert and leave existing data untouched.
@@ -922,23 +1034,36 @@ async function actionSyncInstruments() {
 
 async function actionIngestCandles(uid: string | null, body: Record<string, unknown>) {
   const symbol = String(body.symbol ?? "");
-  const timeframe = String(body.timeframe ?? "") as Timeframe;
-  if (!symbol || !KITE_INTERVAL[timeframe]) throw new Error("symbol and valid timeframe required");
+  const timeframe = String(body.timeframe ?? "");
+  if (!symbol || !isTimeframe(timeframe)) throw new Error("symbol and valid timeframe required");
   const defaults: Record<Timeframe, number> = { "15m": 60, "1h": 100, "1d": 365, "1wk": 365 };
   const days =
     typeof body.days === "number" ? Math.min(Math.max(1, body.days), 400) : defaults[timeframe];
-  const creds = await kiteCreds();
-  const rows = await fetchKiteCandles(symbol, timeframe, days, creds, uid);
-  if (rows.length === 0) return { symbol, timeframe, inserted: 0 };
-  const inserted = await upsertCandles(rows);
-  return { symbol, timeframe, inserted, latest_ts: rows[rows.length - 1].ts };
+  // An explicit provider in the request wins, so the chart screen can pull a
+  // symbol on demand even when the configured provider is "manual".
+  const requested = String(body.provider ?? "");
+  const provider: Provider =
+    requested === "kite" || requested === "yahoo" ? requested : await activeProvider();
+  const effective: Provider = provider === "manual" ? "yahoo" : provider;
+  const got = await fetchCandles(symbol, timeframe, days, uid, effective);
+  if (got.rows.length === 0) {
+    return { symbol, timeframe, inserted: 0, provider: got.usedProvider };
+  }
+  const inserted = await upsertCandles(got.rows);
+  return {
+    symbol,
+    timeframe,
+    inserted,
+    provider: got.usedProvider,
+    latest_ts: got.rows[got.rows.length - 1].ts,
+  };
 }
 
 async function actionIngestCsv(uid: string | null, body: Record<string, unknown>) {
   const symbol = String(body.symbol ?? "");
-  const timeframe = String(body.timeframe ?? "") as Timeframe;
+  const timeframe = String(body.timeframe ?? "");
   const csv = String(body.csv ?? "");
-  if (!symbol || !KITE_INTERVAL[timeframe] || !csv)
+  if (!symbol || !isTimeframe(timeframe) || !csv)
     throw new Error("symbol, timeframe, csv required");
   if (csv.length > 5_000_000) throw new Error("CSV too large (5 MB max)");
   const lines = csv.split(/\r?\n/).filter((l) => l.trim().length > 0);
@@ -974,18 +1099,40 @@ async function actionIngestCsv(uid: string | null, body: Record<string, unknown>
 async function actionGetLtp(body: Record<string, unknown>) {
   const symbols = Array.isArray(body.symbols) ? body.symbols.map(String).slice(0, 200) : [];
   if (symbols.length === 0) throw new Error("symbols required");
-  const creds = await kiteCreds();
-  const params = symbols.map((s) => `i=NSE:${encodeURIComponent(s)}`).join("&");
-  const res = await fetch(`https://api.kite.trade/quote/ltp?${params}`, {
-    headers: kiteHeaders(creds),
-  });
-  if (!res.ok) throw new Error(`Kite LTP failed (${res.status})`);
-  const body2 = (await res.json()) as {
-    data: Record<string, { last_price: number }>;
-  };
+
+  // Kite quotes the whole list in one call, so try it first when it is
+  // configured — but never let a dead token be the reason there is no price.
+  if ((await activeProvider()) === "kite") {
+    try {
+      const creds = await kiteCreds();
+      const params = symbols.map((s) => `i=NSE:${encodeURIComponent(s)}`).join("&");
+      const res = await fetch(`https://api.kite.trade/quote/ltp?${params}`, {
+        headers: kiteHeaders(creds),
+      });
+      if (!res.ok) throw new Error(`Kite LTP failed (${res.status})`);
+      const body2 = (await res.json()) as { data: Record<string, { last_price: number }> };
+      const out: Record<string, number> = {};
+      for (const [k, v] of Object.entries(body2.data ?? {})) {
+        out[k.split(":")[1] ?? k] = v.last_price;
+      }
+      if (Object.keys(out).length > 0) return out;
+    } catch (e) {
+      console.warn(`Kite LTP failed, falling back to Yahoo: ${String(e)}`);
+    }
+  }
+
+  // Yahoo has no batch quote endpoint we can rely on, so take the last close
+  // of the most recent intraday bar, one symbol at a time and paced.
   const out: Record<string, number> = {};
-  for (const [k, v] of Object.entries(body2.data ?? {})) {
-    out[k.split(":")[1] ?? k] = v.last_price;
+  for (const s of symbols.slice(0, 40)) {
+    try {
+      const rows = await fetchYahooCandles(s, "15m", 5, null);
+      const last = rows[rows.length - 1];
+      if (last) out[s] = last.close;
+    } catch (e) {
+      console.warn(`Yahoo LTP failed for ${s}: ${String(e)}`);
+    }
+    await sleep(YAHOO_SPACING_MS);
   }
   return out;
 }
@@ -1021,8 +1168,8 @@ async function actionRefreshCandles(uid: string | null, body: Record<string, unk
     await insertAlert(uid, {
       alert_type: "provider_failure",
       severity: "critical",
-      title: "Candle refresh returned no data",
-      body: `Provider returned zero rows for all ${stocks.length} symbols. Existing data left untouched. Check the Kite access token in Settings.`,
+      title: "Prices didn't update",
+      body: `No data came back for any of your ${stocks.length} symbols, so nothing was changed — what you're looking at is yesterday's. Check Settings → Data health.`,
       payload: { errors: refresh.errors.slice(0, 10) },
     });
     return { ok: false, error: "provider returned zero rows", refresh };
@@ -1045,8 +1192,8 @@ async function actionNightly(uid: string | null) {
     await insertAlert(uid, {
       alert_type: "provider_failure",
       severity: "critical",
-      title: "Nightly refresh returned no data",
-      body: `Provider returned zero rows for all ${stocks.length} symbols. Levels and screener were NOT recomputed; yesterday's data stands. Check the Kite access token.`,
+      title: "Overnight update found no data",
+      body: `No data came back for any of your ${stocks.length} symbols. Levels and the screener were left alone rather than recomputed on nothing, so yesterday's numbers stand. Check Settings → Data health.`,
       payload: { errors: refresh.errors.slice(0, 10) },
     });
     return { ok: false, error: "provider returned zero rows", refresh };
